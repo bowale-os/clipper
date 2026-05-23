@@ -1,0 +1,5 @@
+allowBuilds:
+  '@clerk/shared': true
+minimumReleaseAgeExclude:
+  - '@clerk/react@6.7.0'
+  - '@clerk/shared@4.13.0'
