@@ -49,32 +49,39 @@ async def clerk_auth(request: Request):
 
 
 async def create_user(data: dict):
-
     try:
         first_name = data.get("first_name") or ""
         last_name = data.get("last_name") or ""
         email_addresses = data.get("email_addresses", [])
         
-        if not email_addresses:
-            raise ValueError("No email address found")
-        
-        response = await database.users.insert_one({
+        if not email_addresses or not email_addresses[0].get("email_address"):
+            raise ValueError("No email address found in Clerk data")
+
+        user_doc = {
             "clerk_id": data["id"],
             "email": email_addresses[0]["email_address"],
             "name": f"{first_name} {last_name}".strip(),
             "created_at": datetime.now(timezone.utc)
-        })
+        }
 
+        response = await database.users.insert_one(user_doc)
+        
         if response.inserted_id:
-            print("User was inserted correctly")
+            print(f"✅ User created successfully: {response.inserted_id}")
             return {
                 "success": True,
-                "message": "User was created successfully",
+                "message": "User created successfully",
                 "clerk_id": data.get("id"),
                 "db_id": str(response.inserted_id)
             }
-    
-    except Exception as e:
-        print("Error creating user:", e)
-        raise ValueError(f"User.created data was weird: {e}")
 
+    except Exception as e:
+        print("🔴 Detailed Error creating user:")
+        print(f"   Type: {type(e).__name__}")
+        print(f"   Message: {e}")
+        import traceback
+        traceback.print_exc()   # This will show full stack trace
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create user: {str(e)}"
+        )
