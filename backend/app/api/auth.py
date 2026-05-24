@@ -27,7 +27,7 @@ async def clerk_auth(request: Request):
         print(event_data, event_type)
 
         if event_type != "user.created":
-            raise HTTPException("user was not authenticated correctly")
+            raise HTTPException(status_code=400, detail="user was not authenticated correctly")
         
         return await create_user(event_data)
 
@@ -51,23 +51,30 @@ async def clerk_auth(request: Request):
 async def create_user(data: dict):
 
     try:
+        first_name = data.get("first_name") or ""
+        last_name = data.get("last_name") or ""
+        email_addresses = data.get("email_addresses", [])
+        
+        if not email_addresses:
+            raise ValueError("No email address found")
+        
         response = await database.users.insert_one({
             "clerk_id": data["id"],
-            "email": data.get("email_addresses")[0]["email_address"],
-            "name": data.get("first_name") + " " +  data.get("last_name"),
+            "email": email_addresses[0]["email_address"],
+            "name": f"{first_name} {last_name}".strip(),
             "created_at": datetime.now(timezone.utc)
         })
 
         if response.inserted_id:
+            print("User was inserted correctly")
             return {
                 "success": True,
                 "message": "User was created successfully",
                 "clerk_id": data.get("id"),
                 "db_id": str(response.inserted_id)
             }
-        
-        print("User was inserted correctly")
     
     except Exception as e:
-        raise ValueError("User.created data was weird")
+        print("Error creating user:", e)
+        raise ValueError(f"User.created data was weird: {e}")
 
