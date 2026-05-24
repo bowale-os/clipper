@@ -1,4 +1,4 @@
-import { UserButton } from '@clerk/react'
+import { UserButton, useUser } from '@clerk/react'
 
 const projects = [
   {
@@ -43,6 +43,9 @@ const clips = [
 ]
 
 function DashBoard() {
+  const { isLoaded, user } = useUser()
+  const displayName = user?.firstName || user?.fullName || 'Account'
+
   return (
     <main className="dashboard-shell">
       <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
@@ -74,7 +77,7 @@ function DashBoard() {
             <h1>What should Clippper make today?</h1>
           </div>
           <div className="dashboard-account">
-            <span>Account</span>
+            <span>{isLoaded ? displayName : 'Account'}</span>
             <UserButton />
           </div>
         </header>

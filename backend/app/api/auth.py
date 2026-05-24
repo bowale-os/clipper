@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException, status
 from svix.webhooks import Webhook, WebhookVerificationError
+from datetime import datetime, timezone
 import json
 
 from app.config.secrets import settings
@@ -53,7 +54,8 @@ async def create_user(data: dict):
         response = await database.users.insert_one({
             "clerk_id": data["id"],
             "email": data.get("email_addresses")[0]["email_address"],
-            "name": data.get("first_name") + data.get("last_name"),
+            "name": data.get("first_name") + " " +  data.get("last_name"),
+            "created_at": datetime.now(timezone.utc)
         })
 
         if response.inserted_id:
