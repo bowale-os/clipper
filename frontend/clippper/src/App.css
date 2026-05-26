@@ -36,6 +36,24 @@ button {
   font: inherit;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  transform: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .app-shell {
   min-height: 100vh;
   overflow: hidden;
@@ -505,6 +523,13 @@ button {
   line-height: 1;
 }
 
+.dashboard-upload-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 0.42fr);
+  gap: 1rem;
+  align-items: start;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(18rem, 0.95fr);
@@ -524,6 +549,19 @@ button {
   padding: 1rem;
 }
 
+.upload-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.upload-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .panel-label {
   margin: 0 0 0.35rem;
   color: #6e6e73;
@@ -538,6 +576,33 @@ button {
   color: #111114;
   font-size: 1.2rem;
   letter-spacing: 0;
+}
+
+.upload-status {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 0.42rem 0.68rem;
+  background: #f5f5f7;
+  color: #6e6e73;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.upload-status.uploading,
+.upload-status.initializing,
+.upload-status.completing {
+  background: rgba(0, 113, 227, 0.08);
+  color: #174ea6;
+}
+
+.upload-status.success {
+  background: rgba(34, 139, 86, 0.1);
+  color: #1f7a4d;
+}
+
+.upload-status.error {
+  background: rgba(191, 64, 64, 0.1);
+  color: #a33131;
 }
 
 .upload-drop {
@@ -576,6 +641,114 @@ button {
   line-height: 1;
 }
 
+.upload-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  width: 100%;
+  min-height: 9rem;
+  border: 1px dashed rgba(17, 17, 20, 0.22);
+  border-radius: 1rem;
+  padding: 1rem;
+  background:
+    linear-gradient(135deg, rgba(0, 113, 227, 0.08), rgba(255, 255, 255, 0.62)),
+    #ffffff;
+  color: #111114;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.upload-picker:hover:not(:disabled) {
+  border-color: rgba(0, 113, 227, 0.34);
+  box-shadow: 0 18px 40px rgba(17, 17, 20, 0.08);
+  transform: translateY(-1px);
+}
+
+.upload-picker span:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  font-weight: 750;
+}
+
+.upload-picker small {
+  display: block;
+  margin-top: 0.35rem;
+  color: #6e6e73;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.upload-progress {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.upload-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #5f6368;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.upload-progress-meta strong {
+  color: #111114;
+}
+
+.upload-progress-track {
+  height: 0.6rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(17, 17, 20, 0.08);
+}
+
+.upload-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #0071e3;
+  transition: width 180ms ease;
+}
+
+.upload-message {
+  margin: 0;
+  border-radius: 0.85rem;
+  padding: 0.85rem;
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.upload-message.error {
+  background: rgba(191, 64, 64, 0.1);
+  color: #a33131;
+}
+
+.upload-message.success {
+  display: grid;
+  gap: 0.25rem;
+  background: rgba(34, 139, 86, 0.1);
+  color: #1f7a4d;
+}
+
+.upload-message.success span {
+  color: #4f6f5b;
+  font-size: 0.84rem;
+}
+
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
 .agent-input {
   width: 100%;
   min-height: 7rem;
@@ -596,6 +769,130 @@ button {
 
 .dashboard-action {
   justify-self: start;
+}
+
+.upload-guide {
+  padding: 1rem;
+}
+
+.upload-guide ol {
+  display: grid;
+  gap: 0.75rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.upload-guide li {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid rgba(17, 17, 20, 0.07);
+  border-radius: 0.9rem;
+  padding: 0.85rem;
+  background: #ffffff;
+}
+
+.upload-guide strong {
+  color: #111114;
+  font-size: 0.95rem;
+}
+
+.upload-guide span {
+  color: #6e6e73;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.videos-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.videos-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid rgba(17, 17, 20, 0.08);
+  border-radius: 1.15rem;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 18px 45px rgba(17, 17, 20, 0.08);
+}
+
+.videos-toolbar h2 {
+  margin: 0;
+  color: #111114;
+  font-size: 1.2rem;
+}
+
+.videos-panel {
+  overflow: hidden;
+  padding: 1rem;
+}
+
+.videos-table {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.videos-table-row {
+  display: grid;
+  grid-template-columns: minmax(13rem, 1.3fr) 7.5rem 6rem minmax(10rem, 0.8fr) minmax(12rem, 1fr);
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid rgba(17, 17, 20, 0.07);
+  border-radius: 0.9rem;
+  padding: 0.75rem;
+  background: #ffffff;
+  color: #5f6368;
+  font-size: 0.86rem;
+}
+
+.videos-table-head {
+  border-color: transparent;
+  background: transparent;
+  color: #6e6e73;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.videos-table-row strong {
+  color: #111114;
+  font-size: 0.92rem;
+}
+
+.videos-table-row mark {
+  border-radius: 999px;
+  padding: 0.32rem 0.55rem;
+  background: rgba(0, 113, 227, 0.08);
+  color: #174ea6;
+  font-weight: 750;
+}
+
+.video-id {
+  overflow: hidden;
+  color: #6e6e73;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.videos-empty,
+.videos-loading {
+  display: grid;
+  gap: 0.3rem;
+  border: 1px dashed rgba(17, 17, 20, 0.16);
+  border-radius: 1rem;
+  padding: 1rem;
+  background: #ffffff;
+  color: #6e6e73;
+}
+
+.videos-empty strong {
+  color: #111114;
 }
 
 .metrics-panel {
@@ -737,6 +1034,19 @@ button {
   .dashboard-grid {
     grid-template-columns: 1fr;
   }
+
+  .dashboard-upload-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .videos-table {
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+  }
+
+  .videos-table-row {
+    min-width: 58rem;
+  }
 }
 
 @media (max-width: 640px) {
@@ -763,5 +1073,23 @@ button {
 
   .project-row {
     grid-template-columns: 1fr;
+  }
+
+  .dashboard-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .upload-card-header {
+    flex-direction: column;
+  }
+
+  .upload-status {
+    align-self: flex-start;
+  }
+
+  .videos-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

@@ -1,7 +1,7 @@
 from clerk_backend_api import Clerk
 
 
-from ..config.secrets import settings
+from app.config.secrets import settings
 
 
 
