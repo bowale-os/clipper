@@ -49,7 +49,7 @@ button:disabled {
   padding: 0;
   margin: -1px;
   overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
 }
@@ -874,7 +874,7 @@ button:disabled {
 .video-id {
   overflow: hidden;
   color: #6e6e73;
-  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.78rem;
   text-overflow: ellipsis;
   white-space: nowrap;

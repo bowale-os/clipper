@@ -47,7 +47,6 @@ async def video_metadata_storage(
         "created_at" : datetime.now(timezone.utc)
     }
 
-    await database.videos.insert_one(video_doc)
 
     # content type based on extension
     content_types = {
@@ -57,8 +56,11 @@ async def video_metadata_storage(
         ".mkv": "video/x-matroska"
     }
     content_type = content_types.get(file_extension, "video/mp4")
-
+    
     upload_url = generate_upload_url(r2_key, content_type)
+
+    await database.videos.insert_one(video_doc)
+    
 
     return {
         "video_id": video_id,
@@ -81,7 +83,7 @@ async def complete_video_upload(
         raise HTTPException(status_code=404, detail="Video not found")
 
     await database.videos.update_one(
-        {"_id": request.video_id},
+        {"_id": request.video_id, "user_id": user_id},
         {"$set": {"status": VideoStatus.uploaded}}
     )
 
