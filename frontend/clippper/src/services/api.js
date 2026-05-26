@@ -123,6 +123,7 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
     }
 
     const xhr = new XMLHttpRequest()
+    xhr.timeout = 120000
 
     xhr.upload.addEventListener('progress', (event) => {
       if (!event.lengthComputable || !onProgress) {
@@ -149,6 +150,10 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
 
     xhr.addEventListener('error', () => {
       reject(new ApiError('The file upload failed because of a network error.'))
+    })
+
+    xhr.addEventListener('timeout', () => {
+      reject(new ApiError('The file upload timed out. Please try again.'))
     })
 
     xhr.addEventListener('abort', () => {
