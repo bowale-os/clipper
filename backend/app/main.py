@@ -3,16 +3,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import main_router
 
-app = FastAPI()
+app = FastAPI(redirect_slashes=True)
 
 app.include_router(main_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins = ["http://localhost:5173", "https://clippper.vercel.app"],
+    allow_origins = ["http://localhost:5173", 
+                     "https://clippper.vercel.app",
+                     "https://clippper.fyi"],
+
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 @app.get("/hit-it")

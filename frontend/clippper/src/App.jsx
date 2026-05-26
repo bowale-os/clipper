@@ -2,6 +2,7 @@ import ClerkProviderWithRoutes from './services/auth/ClerkProviderWithRoutes'
 import { Routes, Route } from 'react-router-dom'
 import Home from './pages/Home'
 import DashBoard from './pages/DashBoard'
+import Videos from './pages/Videos'
 import SsoCallback from './services/auth/SsoCallback'
 import ProtectedRoute from './services/auth/ProtectedRoute'
 import './App.css'
@@ -19,6 +20,14 @@ function App() {
           element={
             <ProtectedRoute>
               <DashBoard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/videos"
+          element={
+            <ProtectedRoute>
+              <Videos />
             </ProtectedRoute>
           }
         />
