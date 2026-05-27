@@ -189,7 +189,7 @@ export async function completeVideoUpload({ videoId, token }) {
 }
 
 export async function getUserVideos({ token }) {
-  return requestJson('/videos/', {
+  return requestJson('/videos', {
     method: 'GET',
     token,
   })
