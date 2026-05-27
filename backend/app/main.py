@@ -8,7 +8,10 @@ app = FastAPI(redirect_slashes=False)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:5173",
+        "https://clippper.vercel.app",
         "https://clippper.fyi",
+        "https://www.clippper.fyi",   # add www variant just in case
     ],
     allow_credentials=True,
     allow_methods=["*"],           # Use "*" for debugging
