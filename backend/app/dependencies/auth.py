@@ -26,7 +26,7 @@ async def get_jwks():
     if base_url.startswith("https://"):
         base_url = base_url[8:]
     
-    jwks_url = f"https://{base_url}/.well-known/jwks.json"
+    jwks_url = f"https://{base_url}"
 
     print(f"🔑 Fetching JWKS from: {jwks_url}")   # ← Debug line
 
