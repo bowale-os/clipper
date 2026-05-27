@@ -5,8 +5,6 @@ from app.api import main_router
 
 app = FastAPI(redirect_slashes=True)
 
-app.include_router(main_router)
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins = ["http://localhost:5173", 
@@ -17,6 +15,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+
+app.include_router(main_router)
+
 
 @app.get("/hit-it")
 def home():
