@@ -8,8 +8,11 @@ export function useAuthedApi() {
   const navigate = useNavigate()
 
   const handleExpiredAuth = useCallback(async () => {
-    await signOut()
-    navigate('/', { replace: true })
+    try {
+      await signOut()
+    } finally {
+      navigate('/', { replace: true })
+    }
   }, [navigate, signOut])
 
   const runWithToken = useCallback(

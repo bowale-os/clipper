@@ -4,8 +4,6 @@ import { NavLink } from 'react-router-dom'
 const navItems = [
   { label: 'Dashboard', to: '/dashboard' },
   { label: 'Videos', to: '/videos' },
-  { label: 'Clips', to: '/clips' },
-  { label: 'Settings', to: '/settings' },
 ]
 
 function DashboardLayout({ children, eyebrow = 'Agent workspace', title }) {
