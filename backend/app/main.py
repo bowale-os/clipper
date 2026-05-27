@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import main_router
-app = FastAPI(redirect_slashes=False)
+app = FastAPI(redirect_slashes=True)
 
 # CORS Middleware - Put this RIGHT AFTER creating the app
 app.add_middleware(

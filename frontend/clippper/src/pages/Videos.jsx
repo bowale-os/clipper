@@ -91,7 +91,7 @@ function Videos() {
         <div className="videos-toolbar">
           <div>
             <p className="panel-label">Backend source</p>
-            <h2>GET /videos</h2>
+            <h2>GET /videos/</h2>
           </div>
           <button className="button button-secondary" type="button" onClick={refresh} disabled={isLoading}>
             {isLoading ? 'Refreshing...' : 'Refresh'}
