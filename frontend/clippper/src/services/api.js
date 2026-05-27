@@ -127,7 +127,7 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
     }
 
     const xhr = new XMLHttpRequest()
-    xhr.timeout = 120000
+    xhr.timeout = 360000
 
     xhr.upload.addEventListener('progress', (event) => {
       if (!event.lengthComputable || !onProgress) {
