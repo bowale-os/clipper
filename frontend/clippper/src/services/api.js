@@ -195,6 +195,25 @@ export async function getUserVideos({ token }) {
   })
 }
 
+export async function getVideoMetadata({ videoId, token }) {
+  return requestJson(`/videos/${encodeURIComponent(videoId)}/metadata`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function createClip({ videoId, startSec, endSec, token }) {
+  return requestJson('/clips/create', {
+    method: 'POST',
+    token,
+    body: {
+      video_id: videoId,
+      start_sec: startSec,
+      end_sec: endSec,
+    },
+  })
+}
+
 export async function uploadVideoFile({ file, token, onProgress, onStepChange }) {
   if (!file) {
     throw new ApiError('Choose a video file before uploading.')

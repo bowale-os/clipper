@@ -7,3 +7,5 @@ pydantic-settings
 svix
 boto3
 pyjwt[cryptography]
+modal
+ffmpeg-python
