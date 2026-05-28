@@ -2,11 +2,13 @@ from fastapi import APIRouter, Request, HTTPException, status
 from svix.webhooks import Webhook, WebhookVerificationError
 from datetime import datetime, timezone
 import json
+import logging
 
 from app.config.secrets import settings
 from app.services.mongo_client import database
 
 a_router = APIRouter()
+logger = logging.getLogger(__name__)
 
 CLERK_WEBHOOK_SECRET = settings.CLERK_WEBHOOK_SIGNING_SECRET
 
@@ -30,11 +32,12 @@ async def clerk_auth(request: Request):
 
     event_type = message.get("type")
     event_data = message.get("data")
+    logger.info("Received Clerk webhook event: %s", event_type)
 
-    print(event_data, event_type)
 
     if event_type != "user.created":
-        raise HTTPException(status_code=400, detail="user was not authenticated correctly")
+        # Acknowledge unhandled events so Clerk does not retry them.
+       return {"success": True, "message": f"Ignored event: {event_type}"}
 
     try:
         return await create_user(event_data)

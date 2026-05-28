@@ -6,7 +6,7 @@ import json
 import uuid
 import os
 import ffmpeg
-
+import asyncio
 
 from app.services.mongo_client import database
 from app.dependencies.auth import get_current_user
@@ -168,7 +168,7 @@ async def get_video_metadata(
                 "duration": video["duration"],
                 "filename": video["filename"]
             }
-        probe = ffmpeg.probe(download_url)
+        probe = await asyncio.to_thread(ffmpeg.probe, download_url)
         duration = float(probe['format']['duration'])
 
         # save duration to MongoDB so next call is instant
@@ -176,7 +176,7 @@ async def get_video_metadata(
             {"_id": video_id},
             {"$set": {"duration": duration}}
         )
-        
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to probe video metadata: {str(e)}")
 

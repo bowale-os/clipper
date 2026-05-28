@@ -50,8 +50,11 @@ def get_clip_from_r2(
         probe = ffmpeg.probe(download_url)
         duration = float(probe['format']['duration'])
 
-        if not (start_sec < end_sec) and not (end_sec < duration):
-            raise Exception("The start and end times are wrongly formatted")
+        if start_sec < 0 or start_sec >= end_sec or end_sec > duration:
+            raise ValueError(
+                f"Invalid clip range: require 0 <= start ({start_sec}) "
+                f"< end ({end_sec}) <= duration ({duration})"
+        )
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = f"{tmp_dir}/{clip_id}.mp4"
