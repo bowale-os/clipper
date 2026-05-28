@@ -3,6 +3,7 @@ import { Routes, Route } from 'react-router-dom'
 import Home from './pages/Home'
 import DashBoard from './pages/DashBoard'
 import Videos from './pages/Videos'
+import ClipEditor from './pages/ClipEditor'
 import SsoCallback from './services/auth/SsoCallback'
 import ProtectedRoute from './services/auth/ProtectedRoute'
 import './App.css'
@@ -28,6 +29,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Videos />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/videos/:videoId/clips"
+          element={
+            <ProtectedRoute>
+              <ClipEditor />
             </ProtectedRoute>
           }
         />

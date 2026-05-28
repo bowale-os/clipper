@@ -1,5 +1,6 @@
 import DashboardLayout from '../components/DashboardLayout'
 import { useUserVideos } from '../hooks/useUserVideos'
+import { Link } from 'react-router-dom'
 
 function asArray(value) {
   return Array.isArray(value) ? value : []
@@ -55,7 +56,12 @@ function VideoTable({ emptyLabel, title, videos }) {
             <span role="columnheader">Video ID</span>
           </div>
           {videos.map((video) => (
-            <div className="videos-table-row" role="row" key={getVideoId(video)}>
+            <Link
+              className="videos-table-row videos-table-link"
+              role="row"
+              key={getVideoId(video)}
+              to={`/videos/${encodeURIComponent(getVideoId(video))}/clips`}
+            >
               <span role="cell">
                 <strong>{video.filename || 'Untitled video'}</strong>
               </span>
@@ -67,7 +73,7 @@ function VideoTable({ emptyLabel, title, videos }) {
               <span className="video-id" role="cell">
                 {getVideoId(video)}
               </span>
-            </div>
+            </Link>
           ))}
         </div>
       ) : (
