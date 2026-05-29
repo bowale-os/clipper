@@ -21,6 +21,7 @@ def get_r2():
         region_name="auto"
     )
 
+
 @app.function(
     image=image,
     min_containers=1,
@@ -78,3 +79,27 @@ def get_clip_from_r2(
 
     except Exception as e:
         return {"error": f"This error {e} occurred"}
+    
+
+@app.function(
+    image=image,
+    timeout=60,
+    secrets=[modal.Secret.from_name("r2-secrets")]
+)
+
+def get_video_duration(video_r2_key: str):
+    import ffmpeg
+    
+    r2 = get_r2()
+    bucket = os.environ["R2_BUCKET_NAME"]
+    
+    download_url = r2.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": video_r2_key},
+        ExpiresIn=3600
+    )
+    
+    probe = ffmpeg.probe(download_url)
+    duration = round(float(probe['format']['duration']), 2)
+    
+    return {"duration": duration}
