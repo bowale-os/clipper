@@ -2,11 +2,12 @@ from fastapi import APIRouter, Request, HTTPException, status, Depends
 from datetime import datetime, timezone
 from pydantic import BaseModel
 from enum import Enum
-from ffmpeg_probe import probe
 import json
 import uuid
 import os
 import asyncio
+import subprocess
+import json
 
 from app.services.mongo_client import database
 from app.dependencies.auth import get_current_user
@@ -26,6 +27,20 @@ class InitialVideoRequest(BaseModel):
 
 class CompleteVideoRequest(BaseModel):
     video_id: str
+
+
+async def get_video_duration(video_url: str) -> float:
+    cmd = [
+        "ffprobe",
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_format",
+        "-select_streams", "v:0",
+        video_url
+    ]
+    result = await asyncio.to_thread(lambda: subprocess.run(cmd, capture_output=True, text=True))
+    probe_result = json.loads(result.stdout)
+    return float(probe_result['format']['duration'])
 
 
 v_router = APIRouter()
@@ -169,8 +184,7 @@ async def get_video_metadata(
                 "filename": video["filename"]
             }
             
-        probe_result = await asyncio.to_thread(probe, download_url)
-        duration = float(probe_result['format']['duration'])
+        duration = await get_video_duration(download_url)
 
         # save duration to MongoDB so next call is instant
         await database.videos.update_one(
