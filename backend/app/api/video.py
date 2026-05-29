@@ -2,10 +2,10 @@ from fastapi import APIRouter, Request, HTTPException, status, Depends
 from datetime import datetime, timezone
 from pydantic import BaseModel
 from enum import Enum
+from ffmpeg_probe import probe
 import json
 import uuid
 import os
-import ffmpeg
 import asyncio
 
 from app.services.mongo_client import database
@@ -168,8 +168,9 @@ async def get_video_metadata(
                 "duration": video["duration"],
                 "filename": video["filename"]
             }
-        probe = await asyncio.to_thread(ffmpeg.probe, download_url)
-        duration = float(probe['format']['duration'])
+            
+        probe_result = await asyncio.to_thread(probe, download_url)
+        duration = float(probe_result['format']['duration'])
 
         # save duration to MongoDB so next call is instant
         await database.videos.update_one(
