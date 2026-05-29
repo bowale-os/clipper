@@ -1,5 +1,4 @@
 import modal
-import ffmpeg
 import tempfile
 import boto3
 import os
@@ -36,6 +35,9 @@ def get_clip_from_r2(
     start_sec: float,
     end_sec: float,
 ):
+    
+    import ffmpeg
+    
     try:
 
         r2 = get_r2()
