@@ -21,4 +21,6 @@ class Settings(BaseSettings):
     R2_ACCESS_KEY: str
     R2_BUCKET_NAME: str
     ENV: str
+    MODAL_TOKEN_ID: str
+    MODAL_TOKEN_SECRET: str
 settings = Settings()
