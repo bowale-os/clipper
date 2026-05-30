@@ -21,6 +21,4 @@ class Settings(BaseSettings):
     R2_ACCESS_KEY: str
     R2_BUCKET_NAME: str
     ENV: str
-    GEMINI_API_KEY: str
-
 settings = Settings()
