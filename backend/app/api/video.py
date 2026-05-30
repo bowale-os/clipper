@@ -1,18 +1,14 @@
-from fastapi import APIRouter, Request, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, Depends
 from datetime import datetime, timezone
 from pydantic import BaseModel
 from enum import Enum
-import json
 import uuid
 import os
-import asyncio
-import subprocess
-import json
+import modal
 
 from app.services.mongo_client import database
 from app.dependencies.auth import get_current_user
 from app.services.r2_client import generate_upload_url
-from app.services.r2_client import generate_download_url
 
 class VideoStatus(str, Enum):
     uploading = "uploading"
@@ -28,45 +24,27 @@ class InitialVideoRequest(BaseModel):
 class CompleteVideoRequest(BaseModel):
     video_id: str
 
-
-async def get_video_duration(video_url: str) -> float:
-    cmd = [
-        "ffprobe",
-        "-v", "quiet",
-        "-print_format", "json",
-        "-show_format",
-        "-select_streams", "v:0",
-        video_url
-    ]
-    result = await asyncio.to_thread(lambda: subprocess.run(cmd, capture_output=True, text=True))
-    probe_result = json.loads(result.stdout)
-    return float(probe_result['format']['duration'])
-
-
 v_router = APIRouter()
 
 @v_router.post("/init")
 async def video_metadata_storage(
-    request:InitialVideoRequest, 
-    user_id: str = Depends(get_current_user)):
-
+    request: InitialVideoRequest,
+    user_id: str = Depends(get_current_user)
+):
     file_extension = os.path.splitext(request.filename)[1].lower()
-
     video_id = str(uuid.uuid4())
     r2_key = f"uploads/{video_id}{file_extension}"
 
     video_doc = {
-        "_id" : video_id,
-        "user_id" : user_id,
+        "_id": video_id,
+        "user_id": user_id,
         "filename": request.filename,
-        "size" : request.size,
-        "status" : VideoStatus.uploading,
-        "created_at" : datetime.now(timezone.utc),
+        "size": request.size,
+        "status": VideoStatus.uploading,
+        "created_at": datetime.now(timezone.utc),
         "r2_key": r2_key
     }
 
-
-    # content type based on extension
     content_types = {
         ".mp4": "video/mp4",
         ".mov": "video/quicktime",
@@ -74,7 +52,7 @@ async def video_metadata_storage(
         ".mkv": "video/x-matroska"
     }
     content_type = content_types.get(file_extension, "video/mp4")
-    
+
     try:
         upload_url = generate_upload_url(r2_key, content_type)
     except Exception as e:
@@ -84,14 +62,12 @@ async def video_metadata_storage(
         await database.videos.insert_one(video_doc)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to store video metadata: {str(e)}")
-    
 
     return {
         "video_id": video_id,
         "upload_url": upload_url
     }
 
-    
 
 @v_router.post('/complete')
 async def complete_video_upload(
@@ -101,7 +77,7 @@ async def complete_video_upload(
     try:
         video = await database.videos.find_one({
             "_id": request.video_id,
-            "user_id": user_id  # must be their video
+            "user_id": user_id
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to find video: {str(e)}")
@@ -124,79 +100,71 @@ async def complete_video_upload(
 async def get_videos(
     user_id: str = Depends(get_current_user)
 ):
-    
-    try: 
-        # get ALL uploaded videos for this user
-        uploaded_videos = await database.videos.find({
-            "user_id": user_id,
-            "status": VideoStatus.uploaded
-        }).to_list()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve uploaded videos: {str(e)}")
-
     try:
-        uploading_videos =  await database.videos.find({
-            "user_id": user_id,
-            "status": VideoStatus.uploading
+        all_videos = await database.videos.find({
+            "user_id": user_id
         }).to_list()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve uploading videos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve videos: {str(e)}")
+
+    uploaded_videos = [v for v in all_videos if v.get("status") == VideoStatus.uploaded]
+    uploading_videos = [v for v in all_videos if v.get("status") == VideoStatus.uploading]
+    processing_videos = [v for v in all_videos if v.get("status") == VideoStatus.processing]
+    analyzed_videos = [v for v in all_videos if v.get("status") == VideoStatus.analyzed]
 
     return {
         "uploaded_videos": uploaded_videos,
-        "uploading_videos": uploading_videos
+        "uploading_videos": uploading_videos,
+        "processing_videos": processing_videos,
+        "analyzed_videos": analyzed_videos
     }
-
 
 
 @v_router.get('/{video_id}/metadata')
 async def get_video_metadata(
-    video_id, user_id: str = Depends(get_current_user)
-    ):
-
+    video_id: str,
+    user_id: str = Depends(get_current_user)
+):
     try:
         video = await database.videos.find_one({
-            "_id": video_id, "user_id": user_id
+            "_id": video_id,
+            "user_id": user_id
         })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to find video metadata: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     if not video:
-        raise HTTPException(404, "Video was not found")
-    
-    video_r2_key = video.get("r2_key")
-    if not video_r2_key:
-        file_extension = os.path.splitext(video.get("filename", ""))[1].lower()
-        if not file_extension:
-            raise HTTPException(status_code=400, detail="Video r2_key not found")
-        video_r2_key = f"uploads/{video_id}{file_extension}"
+        raise HTTPException(status_code=404, detail="Video not found")
 
+    r2_key = video.get("r2_key")
+    if not r2_key:
+        raise HTTPException(status_code=400, detail="Video has no r2_key")
+
+    # return cached duration immediately
+    if video.get("duration"):
+        return {
+            "duration": video["duration"],
+            "filename": video["filename"]
+        }
+
+    # no cached duration — call Modal to probe it
     try:
-        download_url = generate_download_url(video_r2_key, 300)
+        get_duration = modal.Function.from_name("clip-maker", "get_video_duration")
+        result = await get_duration.remote.aio(r2_key)
+        duration = result["duration"]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate video download URL: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get duration: {str(e)}")
 
+    # cache in MongoDB
     try:
-        # this should return immediately on second call
-        if video.get("duration"):
-            return {
-                "duration": video["duration"],
-                "filename": video["filename"]
-            }
-            
-        duration = await get_video_duration(download_url)
-
-        # save duration to MongoDB so next call is instant
         await database.videos.update_one(
             {"_id": video_id},
             {"$set": {"duration": duration}}
         )
-
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to probe video metadata: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to cache duration: {str(e)}")
 
     return {
         "duration": round(duration, 2),
         "filename": video["filename"]
     }
-
