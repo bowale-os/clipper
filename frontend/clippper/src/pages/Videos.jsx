@@ -1,6 +1,9 @@
 import DashboardLayout from '../components/DashboardLayout'
 import { useUserVideos } from '../hooks/useUserVideos'
 import { Link } from 'react-router-dom'
+import { useState } from 'react'
+import { ApiError, deleteVideo } from '../services/api'
+import { useAuthedApi } from '../hooks/useAuthedApi'
 
 function asArray(value) {
   return Array.isArray(value) ? value : []
@@ -36,7 +39,19 @@ function getVideoId(video) {
   return video?._id || video?.id || video?.video_id || 'Unknown ID'
 }
 
-function VideoTable({ emptyLabel, title, videos }) {
+function getReadableError(error) {
+  if (error instanceof ApiError) {
+    return error.status ? `${error.message} (${error.status})` : error.message
+  }
+
+  if (error instanceof Error) {
+    return error.message
+  }
+
+  return 'Video could not be deleted.'
+}
+
+function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, title, videos }) {
   return (
     <section className="dashboard-panel videos-panel">
       <div className="panel-heading">
@@ -54,14 +69,10 @@ function VideoTable({ emptyLabel, title, videos }) {
             <span role="columnheader">Size</span>
             <span role="columnheader">Created</span>
             <span role="columnheader">Video ID</span>
+            <span role="columnheader">Actions</span>
           </div>
           {videos.map((video) => (
-            <Link
-              className="videos-table-row videos-table-link"
-              role="row"
-              key={getVideoId(video)}
-              to={`/videos/${encodeURIComponent(getVideoId(video))}/clips`}
-            >
+            <div className="videos-table-row" role="row" key={getVideoId(video)}>
               <span role="cell">
                 <strong>{video.filename || 'Untitled video'}</strong>
               </span>
@@ -73,7 +84,33 @@ function VideoTable({ emptyLabel, title, videos }) {
               <span className="video-id" role="cell">
                 {getVideoId(video)}
               </span>
-            </Link>
+              <span className="video-actions" role="cell">
+                {video.status === 'analyzed' ? (
+                  <Link
+                    className="button button-primary"
+                    to={`/videos/${encodeURIComponent(getVideoId(video))}/moments`}
+                  >
+                    Show moments
+                  </Link>
+                ) : null}
+                {['uploaded', 'analyzed'].includes(video.status) ? (
+                  <Link
+                    className="button button-secondary"
+                    to={`/videos/${encodeURIComponent(getVideoId(video))}/clips`}
+                  >
+                    Cut clip
+                  </Link>
+                ) : null}
+                <button
+                  className="button button-danger"
+                  type="button"
+                  onClick={() => onDeleteVideo(video)}
+                  disabled={deletingVideoId === getVideoId(video)}
+                >
+                  {deletingVideoId === getVideoId(video) ? 'Deleting...' : 'Delete'}
+                </button>
+              </span>
+            </div>
           ))}
         </div>
       ) : (
@@ -86,10 +123,54 @@ function VideoTable({ emptyLabel, title, videos }) {
   )
 }
 
+function VideoCountSummary({ counts }) {
+  return (
+    <section className="video-count-summary" aria-label="Video category counts">
+      {counts.map((count) => (
+        <article key={count.label}>
+          <span>{count.value}</span>
+          <p>{count.label}</p>
+        </article>
+      ))}
+    </section>
+  )
+}
+
 function Videos() {
   const { data, error, isLoading, refresh } = useUserVideos()
+  const { runWithToken } = useAuthedApi()
+  const [deleteError, setDeleteError] = useState('')
+  const [deletingVideoId, setDeletingVideoId] = useState('')
   const uploadedVideos = asArray(data?.uploaded_videos)
   const uploadingVideos = asArray(data?.uploading_videos)
+  const processingVideos = asArray(data?.processing_videos)
+  const analyzedVideos = asArray(data?.analyzed_videos)
+  const errorVideos = asArray(data?.error_videos)
+
+  async function handleDeleteVideo(video) {
+    const videoId = getVideoId(video)
+
+    if (!videoId || videoId === 'Unknown ID') {
+      setDeleteError('Video ID is missing.')
+      return
+    }
+
+    const shouldDelete = window.confirm(`Delete "${video.filename || videoId}"? This also deletes its stored video file.`)
+    if (!shouldDelete) {
+      return
+    }
+
+    try {
+      setDeleteError('')
+      setDeletingVideoId(videoId)
+      await runWithToken((token) => deleteVideo({ token, videoId }))
+      await refresh({ markLoading: false })
+    } catch (deleteFailure) {
+      setDeleteError(getReadableError(deleteFailure))
+    } finally {
+      setDeletingVideoId('')
+    }
+  }
 
   return (
     <DashboardLayout eyebrow="Debug workspace" title="Videos uploaded by this user.">
@@ -110,19 +191,59 @@ function Videos() {
           </div>
         ) : null}
 
+        {deleteError ? (
+          <div className="upload-message error">
+            {deleteError}
+          </div>
+        ) : null}
+
         {isLoading ? (
           <div className="dashboard-panel videos-loading">Loading videos...</div>
         ) : (
           <>
-            <VideoTable
-              emptyLabel="No completed uploads yet."
-              title="Uploaded videos"
-              videos={uploadedVideos}
+            <VideoCountSummary
+              counts={[
+                { label: 'Analyzed', value: analyzedVideos.length },
+                { label: 'Processing', value: processingVideos.length },
+                { label: 'Errors', value: errorVideos.length },
+                { label: 'Uploading', value: uploadingVideos.length },
+                { label: 'Uploaded', value: uploadedVideos.length },
+              ]}
             />
             <VideoTable
+              deletingVideoId={deletingVideoId}
+              emptyLabel="No analyzed videos yet."
+              onDeleteVideo={handleDeleteVideo}
+              title="Analyzed videos"
+              videos={analyzedVideos}
+            />
+            <VideoTable
+              deletingVideoId={deletingVideoId}
+              emptyLabel="No videos currently processing."
+              onDeleteVideo={handleDeleteVideo}
+              title="Processing videos"
+              videos={processingVideos}
+            />
+            <VideoTable
+              deletingVideoId={deletingVideoId}
+              emptyLabel="No videos with errors."
+              onDeleteVideo={handleDeleteVideo}
+              title="Error videos"
+              videos={errorVideos}
+            />
+            <VideoTable
+              deletingVideoId={deletingVideoId}
               emptyLabel="No videos currently uploading."
+              onDeleteVideo={handleDeleteVideo}
               title="Uploading videos"
               videos={uploadingVideos}
+            />
+            <VideoTable
+              deletingVideoId={deletingVideoId}
+              emptyLabel="No completed uploads yet."
+              onDeleteVideo={handleDeleteVideo}
+              title="Uploaded videos"
+              videos={uploadedVideos}
             />
           </>
         )}

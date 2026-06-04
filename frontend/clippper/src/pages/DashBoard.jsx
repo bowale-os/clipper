@@ -23,6 +23,10 @@ function DashBoard() {
               <strong>Complete</strong>
               <span>The backend marks the video as ready for processing.</span>
             </li>
+            <li>
+              <strong>Auto detect</strong>
+              <span>When selected, the backend starts moment detection after upload.</span>
+            </li>
           </ol>
         </aside>
       </section>

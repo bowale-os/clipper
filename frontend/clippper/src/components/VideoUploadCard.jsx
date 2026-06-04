@@ -1,6 +1,13 @@
 import { useRef } from 'react'
 import { useVideoUpload } from '../hooks/useVideoUpload'
 
+const contentTypeOptions = [
+  { label: 'Default', value: 'default' },
+  { label: 'Football', value: 'football' },
+  { label: 'Stream', value: 'stream' },
+  { label: 'Podcast', value: 'podcast' },
+]
+
 function formatBytes(bytes) {
   if (!bytes) {
     return '0 MB'
@@ -37,8 +44,12 @@ function VideoUploadCard() {
     resetUpload,
     result,
     selectFile,
+    setAutoDetect,
+    setContentType,
     status,
     uploadSelectedFile,
+    autoDetect,
+    contentType,
   } = useVideoUpload()
 
   const showProgress = ['uploading', 'completing', 'success'].includes(status)
@@ -83,6 +94,32 @@ function VideoUploadCard() {
         </span>
       </button>
 
+      <label className="upload-auto-detect">
+        <input
+          type="checkbox"
+          checked={autoDetect}
+          onChange={(event) => setAutoDetect(event.target.checked)}
+          disabled={isBusy}
+        />
+        <span>
+          <strong>Auto detect moments</strong>
+          <small>Start backend analysis as soon as the upload completes.</small>
+        </span>
+      </label>
+
+      {autoDetect ? (
+        <label className="upload-content-type">
+          <span>Detection type</span>
+          <select value={contentType} onChange={(event) => setContentType(event.target.value)} disabled={isBusy}>
+            {contentTypeOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
       {showProgress ? (
         <div className="upload-progress" aria-label="Upload progress">
           <div className="upload-progress-meta">
@@ -100,6 +137,7 @@ function VideoUploadCard() {
       {status === 'success' ? (
         <div className="upload-message success">
           <strong>Upload complete!</strong>
+          {autoDetect ? <span>Auto detection has been requested for this video.</span> : null}
           <span>Video ID: {result?.video_id}</span>
         </div>
       ) : null}

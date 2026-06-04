@@ -170,12 +170,14 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
   })
 }
 
-export async function completeVideoUpload({ videoId, token }) {
+export async function completeVideoUpload({ autoDetect = false, contentType, videoId, token }) {
   const data = await requestJson('/videos/complete', {
     method: 'POST',
     token,
     body: {
       video_id: videoId,
+      auto_detect: autoDetect,
+      content_type: contentType,
     },
   })
 
@@ -202,6 +204,28 @@ export async function getVideoMetadata({ videoId, token }) {
   })
 }
 
+export async function getVideoMoments({ videoId, token }) {
+  return requestJson(`/videos/${encodeURIComponent(videoId)}/moments`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export async function deleteVideo({ videoId, token }) {
+  const data = await requestJson(`/videos/${encodeURIComponent(videoId)}`, {
+    method: 'DELETE',
+    token,
+  })
+
+  if (!data?.video_id) {
+    throw new ApiError('The video may have been deleted, but the server response was incomplete.', {
+      details: data,
+    })
+  }
+
+  return data
+}
+
 export async function createClip({ videoId, startSec, endSec, token }) {
   return requestJson('/clips/create', {
     method: 'POST',
@@ -214,7 +238,14 @@ export async function createClip({ videoId, startSec, endSec, token }) {
   })
 }
 
-export async function uploadVideoFile({ file, token, onProgress, onStepChange }) {
+export async function uploadVideoFile({
+  autoDetect = false,
+  contentType = 'default',
+  file,
+  token,
+  onProgress,
+  onStepChange,
+}) {
   if (!file) {
     throw new ApiError('Choose a video file before uploading.')
   }
@@ -230,5 +261,5 @@ export async function uploadVideoFile({ file, token, onProgress, onStepChange })
   await uploadFileToSignedUrl({ file, uploadUrl, onProgress })
 
   onStepChange?.('completing')
-  return completeVideoUpload({ videoId, token })
+  return completeVideoUpload({ autoDetect, contentType, videoId, token })
 }
