@@ -8,7 +8,6 @@ import logging
 
 from app.services.mongo_client import database
 from app.dependencies.auth import get_current_user
-from app.services.modal_client import get_clip_from_r2
 from app.services.r2_client import generate_download_url
 
 logger = logging.getLogger(__name__)
