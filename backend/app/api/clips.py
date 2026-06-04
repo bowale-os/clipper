@@ -28,7 +28,7 @@ class ClipRequest(BaseModel):
 c_router = APIRouter()
 
 @c_router.post("/create")
-async def video_metadata_storage(
+async def create_clip(
     request: ClipRequest,
     user_id: str = Depends(get_current_user),
 ):
@@ -108,3 +108,5 @@ async def video_metadata_storage(
         "url": download_url,
         "message": "Clip created successfully"
     }
+
+    

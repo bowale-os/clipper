@@ -8,6 +8,8 @@ const initialUploadState = {
   progress: 0,
   result: null,
   status: 'idle',
+  autoDetect: false,
+  contentType: 'default',
 }
 
 function getReadableError(error) {
@@ -62,6 +64,20 @@ export function useVideoUpload() {
     })
   }
 
+  function setAutoDetect(autoDetect) {
+    setUploadState((current) => ({
+      ...current,
+      autoDetect,
+    }))
+  }
+
+  function setContentType(contentType) {
+    setUploadState((current) => ({
+      ...current,
+      contentType,
+    }))
+  }
+
   async function uploadSelectedFile() {
     if (!uploadState.file || isBusy) {
       return
@@ -78,6 +94,8 @@ export function useVideoUpload() {
 
       const result = await runWithToken((token) =>
         uploadVideoFile({
+          autoDetect: uploadState.autoDetect,
+          contentType: uploadState.contentType,
           file: uploadState.file,
           token,
           onProgress: (progress) => {
@@ -119,6 +137,8 @@ export function useVideoUpload() {
     isBusy,
     resetUpload,
     selectFile,
+    setAutoDetect,
+    setContentType,
     uploadSelectedFile,
   }
 }
