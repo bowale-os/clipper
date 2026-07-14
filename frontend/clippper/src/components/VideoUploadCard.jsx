@@ -34,15 +34,17 @@ function getStatusText(status) {
   return statusText[status] || statusText.idle
 }
 
-function VideoUploadCard() {
+function VideoUploadCard({ resumeTarget: initialResumeTarget = null }) {
   const fileInputRef = useRef(null)
   const {
     error,
     file,
     isBusy,
     progress,
+    cancelUpload,
     resetUpload,
     result,
+    resumeTarget,
     selectFile,
     setAutoDetect,
     setContentType,
@@ -50,10 +52,11 @@ function VideoUploadCard() {
     uploadSelectedFile,
     autoDetect,
     contentType,
-  } = useVideoUpload()
+  } = useVideoUpload({ resumeTarget: initialResumeTarget })
 
   const showProgress = ['uploading', 'completing', 'success'].includes(status)
   const canUpload = Boolean(file) && !isBusy && status !== 'success'
+  const isResuming = Boolean(resumeTarget)
 
   function openFilePicker() {
     fileInputRef.current?.click()
@@ -61,6 +64,8 @@ function VideoUploadCard() {
 
   function handleFileChange(event) {
     selectFile(event.target.files?.[0] || null)
+    // Clear the native input so picking the same file again still fires `change`.
+    event.target.value = ''
   }
 
   function handleSubmit(event) {
@@ -73,7 +78,7 @@ function VideoUploadCard() {
       <div className="upload-card-header">
         <div>
           <p className="panel-label">Video upload</p>
-          <h2>Upload a long-form video</h2>
+          <h2>{isResuming ? 'Resume your upload' : 'Upload a long-form video'}</h2>
         </div>
         <span className={`upload-status ${status}`}>{getStatusText(status)}</span>
       </div>
@@ -89,8 +94,18 @@ function VideoUploadCard() {
       <button className="upload-picker" type="button" onClick={openFilePicker} disabled={isBusy}>
         <span className="upload-icon">+</span>
         <span>
-          {file ? file.name : 'Choose a video file'}
-          <small>{file ? formatBytes(file.size) : 'MP4, MOV, AVI, or MKV'}</small>
+          {file
+            ? file.name
+            : isResuming
+              ? `Re-select "${resumeTarget.filename}" to resume`
+              : 'Choose a video file'}
+          <small>
+            {file
+              ? formatBytes(file.size)
+              : isResuming
+                ? `${formatBytes(resumeTarget.sizeBytes)} — already-uploaded chunks will be skipped`
+                : 'MP4, MOV, AVI, or MKV'}
+          </small>
         </span>
       </button>
 
@@ -144,16 +159,22 @@ function VideoUploadCard() {
 
       <div className="upload-actions">
         <button className="button button-primary dashboard-action" type="submit" disabled={!canUpload}>
-          {isBusy ? 'Uploading...' : 'Upload'}
+          {isBusy ? 'Uploading...' : isResuming ? 'Resume upload' : 'Upload'}
         </button>
-        <button
-          className="button button-secondary"
-          type="button"
-          onClick={resetUpload}
-          disabled={isBusy || (!file && !error)}
-        >
-          Clear
-        </button>
+        {isBusy ? (
+          <button className="button button-danger" type="button" onClick={cancelUpload}>
+            Cancel
+          </button>
+        ) : (
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={resetUpload}
+            disabled={!file && !error && !isResuming}
+          >
+            Clear
+          </button>
+        )}
       </div>
     </form>
   )

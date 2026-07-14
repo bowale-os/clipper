@@ -3,6 +3,15 @@ import { BrowserRouter } from 'react-router-dom';
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 const clerkAppearance = {
+    variables: {
+        colorPrimary: '#592eff',
+        colorText: '#353241',
+        colorTextSecondary: '#5f5f69',
+        colorBackground: '#ffffff',
+        colorInputBackground: '#ffffff',
+        borderRadius: '12px',
+        fontFamily: "'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif",
+    },
     elements: {
         modalBackdrop: {
             backdropFilter: 'blur(18px)',

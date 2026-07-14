@@ -157,8 +157,8 @@ function Moments() {
       <section className="moments-page">
         <div className="videos-toolbar">
           <div>
-            <p className="panel-label">Backend source</p>
-            <h2>GET /videos/{videoId}/moments</h2>
+            <p className="panel-label">Review</p>
+            <h2>Top moments, ranked</h2>
           </div>
           <div className="moments-toolbar-actions">
             <Link className="button button-secondary" to="/videos">
@@ -206,8 +206,8 @@ function Moments() {
               </div>
             ) : (
               <div className="videos-empty">
-                <strong>No moments returned for this video.</strong>
-                <span>Refresh after analysis finishes, or check the backend record.</span>
+                <strong>No moments yet.</strong>
+                <span>Analysis may still be running — check back in a few minutes.</span>
               </div>
             )}
           </section>

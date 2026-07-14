@@ -15,21 +15,28 @@ export function useAuthedApi() {
     }
   }, [navigate, signOut])
 
+  // Fetches a fresh Clerk token; used per-request by long-running uploads
+  // because a single token expires (~60s) before a large upload finishes.
+  const getFreshToken = useCallback(async () => {
+    let token
+
+    try {
+      token = await getToken()
+    } catch {
+      throw new AuthExpiredError()
+    }
+
+    if (!token) {
+      throw new AuthExpiredError()
+    }
+
+    return token
+  }, [getToken])
+
   const runWithToken = useCallback(
     async (callback) => {
       try {
-        let token
-
-        try {
-          token = await getToken()
-        } catch {
-          throw new AuthExpiredError()
-        }
-
-        if (!token) {
-          throw new AuthExpiredError()
-        }
-
+        const token = await getFreshToken()
         return await callback(token)
       } catch (error) {
         if (error instanceof AuthExpiredError) {
@@ -39,8 +46,8 @@ export function useAuthedApi() {
         throw error
       }
     },
-    [getToken, handleExpiredAuth],
+    [getFreshToken, handleExpiredAuth],
   )
 
-  return { runWithToken }
+  return { runWithToken, getFreshToken, handleExpiredAuth }
 }

@@ -53,7 +53,7 @@ function Home() {
       <section className="hero" aria-labelledby="hero-title">
         <div className="hero-copy-block">
           <p className="eyebrow">Your video clipping agent</p>
-          <h1 id="hero-title">Tell Clippper how to cut, edit, and shape your videos.</h1>
+          <h1 id="hero-title">Tell Clippper how to cut, edit, and <span className="squiggle">shape</span> your videos.</h1>
           <p className="hero-copy">
             Describe the clips you want from a podcast, stream, lesson, or
             interview. Clippper follows your direction, finds the right moments,

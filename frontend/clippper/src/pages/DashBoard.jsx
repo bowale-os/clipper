@@ -1,11 +1,16 @@
+import { useLocation } from 'react-router-dom'
 import DashboardLayout from '../components/DashboardLayout'
 import VideoUploadCard from '../components/VideoUploadCard'
 
 function DashBoard() {
+  // The videos list navigates here with a resume target for interrupted uploads.
+  const location = useLocation()
+  const resumeTarget = location.state?.resume || null
+
   return (
     <DashboardLayout title="Upload a video for Clippper to work on.">
       <section className="dashboard-upload-layout" aria-label="Video upload workspace">
-        <VideoUploadCard />
+        <VideoUploadCard key={resumeTarget?.videoId || 'fresh'} resumeTarget={resumeTarget} />
 
         <aside className="dashboard-panel upload-guide">
           <p className="panel-label">Upload flow</p>

@@ -1,6 +1,6 @@
 import DashboardLayout from '../components/DashboardLayout'
 import { useUserVideos } from '../hooks/useUserVideos'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { ApiError, deleteVideo } from '../services/api'
 import { useAuthedApi } from '../hooks/useAuthedApi'
@@ -51,7 +51,7 @@ function getReadableError(error) {
   return 'Video could not be deleted.'
 }
 
-function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, title, videos }) {
+function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, onResumeVideo, title, videos }) {
   return (
     <section className="dashboard-panel videos-panel">
       <div className="panel-heading">
@@ -79,13 +79,22 @@ function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, title, videos 
               <span role="cell">
                 <mark>{video.status || 'unknown'}</mark>
               </span>
-              <span role="cell">{formatBytes(video.size)}</span>
+              <span role="cell">{formatBytes(video.size_bytes ?? video.size)}</span>
               <span role="cell">{formatDate(video.created_at)}</span>
               <span className="video-id" role="cell">
                 {getVideoId(video)}
               </span>
               <span className="video-actions" role="cell">
-                {video.status === 'analyzed' ? (
+                {video.status === 'uploading' && onResumeVideo ? (
+                  <button
+                    className="button button-primary"
+                    type="button"
+                    onClick={() => onResumeVideo(video)}
+                  >
+                    Resume upload
+                  </button>
+                ) : null}
+                {video.status === 'ready' ? (
                   <Link
                     className="button button-primary"
                     to={`/videos/${encodeURIComponent(getVideoId(video))}/moments`}
@@ -93,7 +102,7 @@ function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, title, videos 
                     Show moments
                   </Link>
                 ) : null}
-                {['uploaded', 'analyzed'].includes(video.status) ? (
+                {['uploaded', 'ready'].includes(video.status) ? (
                   <Link
                     className="button button-secondary"
                     to={`/videos/${encodeURIComponent(getVideoId(video))}/clips`}
@@ -116,7 +125,7 @@ function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, title, videos 
       ) : (
         <div className="videos-empty">
           <strong>{emptyLabel}</strong>
-          <span>Upload a video from the dashboard, then refresh this page.</span>
+          <span>Upload a video from the dashboard and it will show up here.</span>
         </div>
       )}
     </section>
@@ -139,13 +148,26 @@ function VideoCountSummary({ counts }) {
 function Videos() {
   const { data, error, isLoading, refresh } = useUserVideos()
   const { runWithToken } = useAuthedApi()
+  const navigate = useNavigate()
   const [deleteError, setDeleteError] = useState('')
   const [deletingVideoId, setDeletingVideoId] = useState('')
   const uploadedVideos = asArray(data?.uploaded_videos)
   const uploadingVideos = asArray(data?.uploading_videos)
   const processingVideos = asArray(data?.processing_videos)
-  const analyzedVideos = asArray(data?.analyzed_videos)
+  const readyVideos = asArray(data?.ready_videos)
   const errorVideos = asArray(data?.error_videos)
+
+  function handleResumeVideo(video) {
+    navigate('/dashboard', {
+      state: {
+        resume: {
+          videoId: getVideoId(video),
+          filename: video.filename,
+          sizeBytes: video.size_bytes ?? video.size,
+        },
+      },
+    })
+  }
 
   async function handleDeleteVideo(video) {
     const videoId = getVideoId(video)
@@ -173,12 +195,12 @@ function Videos() {
   }
 
   return (
-    <DashboardLayout eyebrow="Debug workspace" title="Videos uploaded by this user.">
+    <DashboardLayout eyebrow="Library" title="Your videos">
       <section className="videos-page">
         <div className="videos-toolbar">
           <div>
-            <p className="panel-label">Backend source</p>
-            <h2>GET /videos/</h2>
+            <p className="panel-label">Library</p>
+            <h2>Everything you've uploaded</h2>
           </div>
           <button className="button button-secondary" type="button" onClick={refresh} disabled={isLoading}>
             {isLoading ? 'Refreshing...' : 'Refresh'}
@@ -203,7 +225,7 @@ function Videos() {
           <>
             <VideoCountSummary
               counts={[
-                { label: 'Analyzed', value: analyzedVideos.length },
+                { label: 'Ready', value: readyVideos.length },
                 { label: 'Processing', value: processingVideos.length },
                 { label: 'Errors', value: errorVideos.length },
                 { label: 'Uploading', value: uploadingVideos.length },
@@ -212,10 +234,10 @@ function Videos() {
             />
             <VideoTable
               deletingVideoId={deletingVideoId}
-              emptyLabel="No analyzed videos yet."
+              emptyLabel="No ready videos yet."
               onDeleteVideo={handleDeleteVideo}
-              title="Analyzed videos"
-              videos={analyzedVideos}
+              title="Ready videos"
+              videos={readyVideos}
             />
             <VideoTable
               deletingVideoId={deletingVideoId}
@@ -235,6 +257,7 @@ function Videos() {
               deletingVideoId={deletingVideoId}
               emptyLabel="No videos currently uploading."
               onDeleteVideo={handleDeleteVideo}
+              onResumeVideo={handleResumeVideo}
               title="Uploading videos"
               videos={uploadingVideos}
             />

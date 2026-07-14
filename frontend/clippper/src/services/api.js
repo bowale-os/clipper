@@ -1,3 +1,5 @@
+import { runMultipartUpload } from './multipartUpload'
+
 const API_URL = import.meta.env.VITE_API_URL
 
 export class ApiError extends Error {
@@ -50,13 +52,16 @@ function getResponseMessage(data, fallback) {
   return fallback
 }
 
-async function requestJson(path, { method = 'GET', token, body } = {}) {
-  requireToken(token)
+async function requestJson(path, { method = 'GET', token, getToken, body } = {}) {
+  // Long uploads outlive a single Clerk token (~60s), so callers can pass a
+  // getToken provider to fetch a fresh token per request instead of a fixed one.
+  const authToken = getToken ? await getToken() : token
+  requireToken(authToken)
 
   const response = await fetch(getApiUrl(path), {
     method,
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${authToken}`,
       'Content-Type': 'application/json',
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -100,17 +105,21 @@ function getVideoContentType(file) {
   return contentTypes[extension] || 'video/mp4'
 }
 
-export async function initVideoUpload({ file, token }) {
+export async function initVideoUpload({ file, token, getToken }) {
   const data = await requestJson('/videos/init', {
     method: 'POST',
     token,
+    getToken,
     body: {
       filename: file.name,
       size: file.size,
     },
   })
 
-  if (!data?.video_id || !data?.upload_url) {
+  const isValidSingle = data?.mode === 'single' && data?.upload_url
+  const isValidMultipart = data?.mode === 'multipart' && data?.upload_id && data?.part_size && data?.part_count
+
+  if (!data?.video_id || (!isValidSingle && !isValidMultipart)) {
     throw new ApiError('The upload could not be started because the server response was incomplete.', {
       details: data,
     })
@@ -119,7 +128,30 @@ export async function initVideoUpload({ file, token }) {
   return data
 }
 
-export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
+export async function getPartUploadUrls({ videoId, partNumbers, getToken }) {
+  return requestJson(`/videos/${encodeURIComponent(videoId)}/parts`, {
+    method: 'POST',
+    getToken,
+    body: { part_numbers: partNumbers },
+  })
+}
+
+export async function getUploadStatus({ videoId, getToken }) {
+  return requestJson(`/videos/${encodeURIComponent(videoId)}/upload-status`, {
+    method: 'GET',
+    getToken,
+  })
+}
+
+export async function abortVideoUpload({ videoId, token, getToken }) {
+  return requestJson(`/videos/${encodeURIComponent(videoId)}/abort`, {
+    method: 'POST',
+    token,
+    getToken,
+  })
+}
+
+export function uploadFileToSignedUrl({ file, uploadUrl, onProgress, signal }) {
   return new Promise((resolve, reject) => {
     if (!uploadUrl) {
       reject(new ApiError('The upload URL is missing.'))
@@ -128,6 +160,7 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
 
     const xhr = new XMLHttpRequest()
     xhr.timeout = 360000
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true })
 
     xhr.upload.addEventListener('progress', (event) => {
       if (!event.lengthComputable || !onProgress) {
@@ -170,14 +203,16 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress }) {
   })
 }
 
-export async function completeVideoUpload({ autoDetect = false, contentType, videoId, token }) {
+export async function completeVideoUpload({ autoDetect = false, contentType, videoId, parts, token, getToken }) {
   const data = await requestJson('/videos/complete', {
     method: 'POST',
     token,
+    getToken,
     body: {
       video_id: videoId,
       auto_detect: autoDetect,
       content_type: contentType,
+      parts: parts || undefined,
     },
   })
 
@@ -243,8 +278,12 @@ export async function uploadVideoFile({
   contentType = 'default',
   file,
   token,
+  getToken,
   onProgress,
   onStepChange,
+  onInit,
+  signal,
+  resume,
 }) {
   if (!file) {
     throw new ApiError('Choose a video file before uploading.')
@@ -254,12 +293,41 @@ export async function uploadVideoFile({
     throw new ApiError('The selected file is empty.')
   }
 
+  const tokenProvider = getToken || (async () => token)
+
   onStepChange?.('initializing')
-  const { video_id: videoId, upload_url: uploadUrl } = await initVideoUpload({ file, token })
+
+  let plan = null
+  if (resume?.videoId) {
+    const status = await getUploadStatus({ videoId: resume.videoId, getToken: tokenProvider })
+    if (status?.resumable) {
+      plan = { ...status, video_id: resume.videoId }
+    }
+    // Not resumable (expired/aborted upstream): fall through to a fresh init.
+  }
+  if (!plan) {
+    plan = await initVideoUpload({ file, getToken: tokenProvider })
+  }
+
+  const videoId = plan.video_id
+  onInit?.({ videoId, mode: plan.mode })
 
   onStepChange?.('uploading')
-  await uploadFileToSignedUrl({ file, uploadUrl, onProgress })
+  let parts
+  if (plan.mode === 'multipart') {
+    parts = await runMultipartUpload({
+      file,
+      partSize: plan.part_size,
+      partCount: plan.part_count,
+      alreadyUploaded: plan.uploaded_parts || [],
+      signParts: (partNumbers) => getPartUploadUrls({ videoId, partNumbers, getToken: tokenProvider }),
+      onProgress,
+      signal,
+    })
+  } else {
+    await uploadFileToSignedUrl({ file, uploadUrl: plan.upload_url, onProgress, signal })
+  }
 
   onStepChange?.('completing')
-  return completeVideoUpload({ autoDetect, contentType, videoId, token })
+  return completeVideoUpload({ autoDetect, contentType, videoId, parts, getToken: tokenProvider })
 }

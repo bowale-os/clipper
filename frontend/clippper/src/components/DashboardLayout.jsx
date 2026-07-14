@@ -6,14 +6,14 @@ const navItems = [
   { label: 'Videos', to: '/videos' },
 ]
 
-function DashboardLayout({ children, eyebrow = 'Agent workspace', title }) {
+function DashboardLayout({ children, eyebrow = 'Workspace', title }) {
   const { isLoaded, user } = useUser()
   const displayName = user?.firstName || user?.fullName || 'Account'
 
   return (
     <main className="dashboard-shell">
-      <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
-        <a className="brand dashboard-brand" href="/" aria-label="Clippper home">
+      <header className="dashboard-topbar" aria-label="Dashboard navigation">
+        <a className="brand" href="/" aria-label="Clippper home">
           <span className="brand-mark">C</span>
           <span>Clippper</span>
         </a>
@@ -32,17 +32,18 @@ function DashboardLayout({ children, eyebrow = 'Agent workspace', title }) {
             </NavLink>
           ))}
         </nav>
-      </aside>
+
+        <div className="dashboard-account">
+          <span>{isLoaded ? displayName : 'Account'}</span>
+          <UserButton />
+        </div>
+      </header>
 
       <section className="dashboard-main">
         <header className="dashboard-header">
           <div>
             <p className="eyebrow">{eyebrow}</p>
             <h1>{title}</h1>
-          </div>
-          <div className="dashboard-account">
-            <span>{isLoaded ? displayName : 'Account'}</span>
-            <UserButton />
           </div>
         </header>
 
