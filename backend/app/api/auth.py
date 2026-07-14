@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Request, HTTPException, status
 from svix.webhooks import Webhook, WebhookVerificationError
-from datetime import datetime, timezone
-import json
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 import logging
 
 from app.config.secrets import settings
-from app.services.mongo_client import database
+from app.db.models import User
+from app.db.session import get_session
 
 a_router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ async def clerk_auth(request: Request):
     try:
         message = wh.verify(payload, headers)
     except WebhookVerificationError as e:
-        print("Webhook verification failed:", e)
+        logger.warning("Webhook verification failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
@@ -40,52 +40,57 @@ async def clerk_auth(request: Request):
        return {"success": True, "message": f"Ignored event: {event_type}"}
 
     try:
-        return await create_user(event_data)
+        return create_user(event_data)
     except HTTPException:
         raise
     except Exception as e:
-        print("Error processing webhook:", e)
-        # Still return 200 in so
-        # me cases to stop retries, or 400 to retry
+        logger.exception("Error processing webhook")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
 
 
-async def create_user(data: dict):
+def create_user(data: dict):
     first_name = data.get("first_name") or ""
     last_name = data.get("last_name") or ""
     email_addresses = data.get("email_addresses", [])
-    
+
     if not email_addresses or not email_addresses[0].get("email_address"):
         raise ValueError("No email address found in Clerk data")
 
-    user_doc = {
-        "clerk_id": data["id"],
-        "email": email_addresses[0]["email_address"],
-        "name": f"{first_name} {last_name}".strip(),
-        "created_at": datetime.now(timezone.utc)
-    }
+    email = email_addresses[0]["email_address"]
+    name = f"{first_name} {last_name}".strip()
 
+    # Upsert: backfills stub rows created by get_current_user_record and handles webhook replays.
+    stmt = (
+        pg_insert(User)
+        .values(clerk_id=data["id"], email=email, name=name)
+        .on_conflict_do_update(
+            index_elements=["clerk_id"],
+            set_={"email": email, "name": name},
+        )
+        .returning(User.id)
+    )
+
+    db = get_session()
     try:
-        response = await database.users.insert_one(user_doc)
+        user_id = db.execute(stmt).scalar_one()
+        db.commit()
     except Exception as e:
-        print("Detailed Error creating user:")
-        print(f"   Type: {type(e).__name__}")
-        print(f"   Message: {e}")
-        import traceback
-        traceback.print_exc()   # This will show full stack trace
+        db.rollback()
+        logger.exception("Failed to create user from Clerk webhook")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to create user: {str(e)}"
         )
-    
-    if response.inserted_id:
-        print(f"User created successfully: {response.inserted_id}")
-        return {
-            "success": True,
-            "message": "User created successfully",
-            "clerk_id": data.get("id"),
-            "db_id": str(response.inserted_id)
-        }
+    finally:
+        db.close()
+
+    logger.info("User upserted from Clerk webhook: %s", user_id)
+    return {
+        "success": True,
+        "message": "User created successfully",
+        "clerk_id": data.get("id"),
+        "db_id": str(user_id),
+    }

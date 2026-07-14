@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +12,7 @@ class Settings(BaseSettings):
         case_sensitive=True        # Important!
     )
 
-    MONGO_CONNECT: str
+    MONGO_CONNECT: Optional[str] = None    # legacy v1, unused
     SECRET_KEY: str
     CLERK_SECRET_KEY: str
     CLERK_WEBHOOK_SIGNING_SECRET: str
@@ -21,6 +23,10 @@ class Settings(BaseSettings):
     R2_ACCESS_KEY: str
     R2_BUCKET_NAME: str
     ENV: str
-    MODAL_TOKEN_ID: str
-    MODAL_TOKEN_SECRET: str
+
+    
+    # "v1" (default, Mongo/Modal) | "v2" (Postgres/RQ)
+    NEON_DB_CONNECT: Optional[str] = None        # Neon Postgres connection string
+    REDIS_URL: Optional[str] = None              # Railway Redis plugin connection string
+
 settings = Settings()

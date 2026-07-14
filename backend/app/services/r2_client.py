@@ -59,3 +59,93 @@ def delete_file(r2_key: str):
         Bucket=settings.R2_BUCKET_NAME,
         Key=r2_key
     )
+
+
+# --- Multipart upload (large files) ---
+
+PART_URL_EXPIRES = 3600  # frontend re-signs on 403, so 1h is plenty
+
+
+def create_multipart_upload(r2_key: str, content_type: str) -> str:
+    """Start a multipart upload, returns the R2 UploadId."""
+    r2 = get_r2_client()
+    resp = r2.create_multipart_upload(
+        Bucket=settings.R2_BUCKET_NAME,
+        Key=r2_key,
+        ContentType=content_type
+    )
+    return resp["UploadId"]
+
+
+def generate_part_upload_urls(r2_key: str, upload_id: str, part_numbers: list[int]) -> dict[int, str]:
+    """Presigned PUT URL per part number (signing is local, no network calls)."""
+    r2 = get_r2_client()
+    return {
+        n: r2.generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": settings.R2_BUCKET_NAME,
+                "Key": r2_key,
+                "UploadId": upload_id,
+                "PartNumber": n
+            },
+            ExpiresIn=PART_URL_EXPIRES
+        )
+        for n in part_numbers
+    }
+
+
+def list_uploaded_parts(r2_key: str, upload_id: str) -> list[dict]:
+    """All parts uploaded so far -> [{part_number, etag, size}]. Raises NoSuchUpload if expired/aborted."""
+    r2 = get_r2_client()
+    parts = []
+    marker = 0
+    while True:
+        resp = r2.list_parts(
+            Bucket=settings.R2_BUCKET_NAME,
+            Key=r2_key,
+            UploadId=upload_id,
+            PartNumberMarker=marker,
+            MaxParts=1000
+        )
+        parts += [
+            {"part_number": p["PartNumber"], "etag": p["ETag"], "size": p["Size"]}
+            for p in resp.get("Parts", [])
+        ]
+        if not resp.get("IsTruncated"):
+            return parts
+        marker = resp["NextPartNumberMarker"]
+
+
+def complete_multipart_upload(r2_key: str, upload_id: str, parts: list[dict]) -> None:
+    """parts: [{part_number, etag}] in any order. ETags must be passed exactly as R2 returned them (quotes included)."""
+    r2 = get_r2_client()
+    r2.complete_multipart_upload(
+        Bucket=settings.R2_BUCKET_NAME,
+        Key=r2_key,
+        UploadId=upload_id,
+        MultipartUpload={
+            "Parts": [
+                {"PartNumber": p["part_number"], "ETag": p["etag"]}
+                for p in sorted(parts, key=lambda p: p["part_number"])
+            ]
+        }
+    )
+
+
+def abort_multipart_upload(r2_key: str, upload_id: str) -> None:
+    r2 = get_r2_client()
+    r2.abort_multipart_upload(
+        Bucket=settings.R2_BUCKET_NAME,
+        Key=r2_key,
+        UploadId=upload_id
+    )
+
+
+def head_object_size(r2_key: str) -> int | None:
+    """ContentLength of an object, or None if it doesn't exist."""
+    r2 = get_r2_client()
+    try:
+        return r2.head_object(Bucket=settings.R2_BUCKET_NAME, Key=r2_key)["ContentLength"]
+    except r2.exceptions.ClientError:
+        return None
