@@ -271,9 +271,12 @@ def complete_video_upload(
     _clear_upload_state(video)
     db.commit()
 
+    logger.info("Enqueuing ingest job for video %s on queue %s", video.id, io_queue.name)
+    job = io_queue.enqueue("app.tasks.ingest.ingest", str(video.id))
+    logger.info("Enqueued ingest job id=%s for video %s", job.id, video.id)
+
     # Every video runs the full ingest -> transcribe -> detect chain; each stage enqueues
     # the next. Clients read the moments back from GET /videos/{id}/moments once ready.
-    io_queue.enqueue("app.tasks.ingest.ingest", str(video.id))
 
     return {"message": "Upload complete", "video_id": str(video.id)}
 
