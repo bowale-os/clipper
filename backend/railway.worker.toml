@@ -1,5 +1,2 @@
-[build]
-nixpacks = { packages = ["ffmpeg"] }
-
 [deploy]
 startCommand = "python -m app.workers.worker_setup"
