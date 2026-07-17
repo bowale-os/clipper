@@ -1,41 +1,25 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import { useVideoUpload } from '../hooks/useVideoUpload'
+import StatusPill from './StatusPill'
+import { UploadIcon } from './icons'
+import { formatBytes } from '../lib/format'
 
 const contentTypeOptions = [
-  { label: 'Default', value: 'default' },
-  { label: 'Football', value: 'football' },
+  { label: 'General', value: 'default' },
   { label: 'Stream', value: 'stream' },
   { label: 'Podcast', value: 'podcast' },
+  { label: 'Football', value: 'football' },
 ]
 
-function formatBytes(bytes) {
-  if (!bytes) {
-    return '0 MB'
-  }
-
-  const units = ['B', 'KB', 'MB', 'GB']
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const value = bytes / 1024 ** exponent
-
-  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`
-}
-
-function getStatusText(status) {
-  const statusText = {
-    idle: 'Choose a long-form video to begin.',
-    selected: 'Ready to upload.',
-    initializing: 'Preparing a secure upload...',
-    uploading: 'Uploading your video...',
-    completing: 'Finishing upload...',
-    success: 'Upload complete!',
-    error: 'Upload needs attention.',
-  }
-
-  return statusText[status] || statusText.idle
+const statusCopy = {
+  initializing: 'Getting a secure upload ready…',
+  uploading: 'Uploading — you can leave this tab open.',
+  completing: 'Wrapping up…',
 }
 
 function VideoUploadCard({ resumeTarget: initialResumeTarget = null }) {
   const fileInputRef = useRef(null)
+  const [isDragging, setIsDragging] = useState(false)
   const {
     error,
     file,
@@ -46,11 +30,9 @@ function VideoUploadCard({ resumeTarget: initialResumeTarget = null }) {
     result,
     resumeTarget,
     selectFile,
-    setAutoDetect,
     setContentType,
     status,
     uploadSelectedFile,
-    autoDetect,
     contentType,
   } = useVideoUpload({ resumeTarget: initialResumeTarget })
 
@@ -58,14 +40,19 @@ function VideoUploadCard({ resumeTarget: initialResumeTarget = null }) {
   const canUpload = Boolean(file) && !isBusy && status !== 'success'
   const isResuming = Boolean(resumeTarget)
 
-  function openFilePicker() {
-    fileInputRef.current?.click()
-  }
-
   function handleFileChange(event) {
     selectFile(event.target.files?.[0] || null)
     // Clear the native input so picking the same file again still fires `change`.
     event.target.value = ''
+  }
+
+  function handleDrop(event) {
+    event.preventDefault()
+    setIsDragging(false)
+
+    if (!isBusy) {
+      selectFile(event.dataTransfer.files?.[0] || null)
+    }
   }
 
   function handleSubmit(event) {
@@ -74,13 +61,13 @@ function VideoUploadCard({ resumeTarget: initialResumeTarget = null }) {
   }
 
   return (
-    <form className="dashboard-panel upload-card" onSubmit={handleSubmit}>
-      <div className="upload-card-header">
+    <form className="card upload-card" onSubmit={handleSubmit}>
+      <div className="panel-heading">
         <div>
-          <p className="panel-label">Video upload</p>
-          <h2>{isResuming ? 'Resume your upload' : 'Upload a long-form video'}</h2>
+          <p className="eyebrow">Upload</p>
+          <h2>{isResuming ? 'Resume your upload' : 'Drop in a stream'}</h2>
         </div>
-        <span className={`upload-status ${status}`}>{getStatusText(status)}</span>
+        {isBusy || status === 'success' ? <StatusPill status={status} /> : null}
       </div>
 
       <input
@@ -91,75 +78,77 @@ function VideoUploadCard({ resumeTarget: initialResumeTarget = null }) {
         onChange={handleFileChange}
       />
 
-      <button className="upload-picker" type="button" onClick={openFilePicker} disabled={isBusy}>
-        <span className="upload-icon">+</span>
+      <button
+        className={isDragging ? 'dropzone is-dragging' : 'dropzone'}
+        disabled={isBusy}
+        onClick={() => fileInputRef.current?.click()}
+        onDragLeave={() => setIsDragging(false)}
+        onDragOver={(event) => {
+          event.preventDefault()
+          setIsDragging(true)
+        }}
+        onDrop={handleDrop}
+        type="button"
+      >
+        <span className="dropzone-glyph">
+          <UploadIcon size={20} />
+        </span>
+        <strong>
+          {file ? file.name : isResuming ? `Re-select "${resumeTarget.filename}"` : 'Drop a video or click to browse'}
+        </strong>
         <span>
           {file
-            ? file.name
+            ? formatBytes(file.size)
             : isResuming
-              ? `Re-select "${resumeTarget.filename}" to resume`
-              : 'Choose a video file'}
-          <small>
-            {file
-              ? formatBytes(file.size)
-              : isResuming
-                ? `${formatBytes(resumeTarget.sizeBytes)} — already-uploaded chunks will be skipped`
-                : 'MP4, MOV, AVI, or MKV'}
-          </small>
+              ? `${formatBytes(resumeTarget.sizeBytes)} — we'll skip the chunks you already sent`
+              : 'MP4, MOV, AVI, or MKV — long streams welcome'}
         </span>
       </button>
 
-      <label className="upload-auto-detect">
-        <input
-          type="checkbox"
-          checked={autoDetect}
-          onChange={(event) => setAutoDetect(event.target.checked)}
-          disabled={isBusy}
-        />
-        <span>
-          <strong>Auto detect moments</strong>
-          <small>Start backend analysis as soon as the upload completes.</small>
-        </span>
-      </label>
-
-      {autoDetect ? (
-        <label className="upload-content-type">
-          <span>Detection type</span>
-          <select value={contentType} onChange={(event) => setContentType(event.target.value)} disabled={isBusy}>
+      <div className="upload-options">
+        <div className="field">
+          <span>What kind of video is this?</span>
+          <div className="segmented" role="group" aria-label="Detection type">
             {contentTypeOptions.map((option) => (
-              <option key={option.value} value={option.value}>
+              <button
+                aria-pressed={contentType === option.value}
+                disabled={isBusy}
+                key={option.value}
+                onClick={() => setContentType(option.value)}
+                type="button"
+              >
                 {option.label}
-              </option>
+              </button>
             ))}
-          </select>
-        </label>
-      ) : null}
+          </div>
+        </div>
+      </div>
 
       {showProgress ? (
-        <div className="upload-progress" aria-label="Upload progress">
-          <div className="upload-progress-meta">
-            <span>{getStatusText(status)}</span>
+        <div aria-live="polite">
+          <div className="progress-meta">
+            <span>{statusCopy[status] || 'Uploaded — analysis is running.'}</span>
             <strong>{progress}%</strong>
           </div>
-          <div className="upload-progress-track">
+          <div className="progress-track">
             <span style={{ width: `${progress}%` }} />
           </div>
         </div>
       ) : null}
 
-      {error ? <p className="upload-message error">{error}</p> : null}
+      {error ? <p className="message error">{error}</p> : null}
 
       {status === 'success' ? (
-        <div className="upload-message success">
-          <strong>Upload complete!</strong>
-          {autoDetect ? <span>Auto detection has been requested for this video.</span> : null}
-          <span>Video ID: {result?.video_id}</span>
+        <div className="message success">
+          <strong>Upload complete — we'll handle the boring stuff.</strong>
+          <span>We're scanning this video for clip-worthy moments. It'll turn up in your library.</span>
+          <span className="mono">{result?.video_id}</span>
         </div>
       ) : null}
 
       <div className="upload-actions">
-        <button className="button button-primary dashboard-action" type="submit" disabled={!canUpload}>
-          {isBusy ? 'Uploading...' : isResuming ? 'Resume upload' : 'Upload'}
+        <button className="button button-primary button-large" type="submit" disabled={!canUpload}>
+          {isBusy ? 'Uploading…' : isResuming ? 'Resume upload' : 'Upload and find moments'}
         </button>
         {isBusy ? (
           <button className="button button-danger" type="button" onClick={cancelUpload}>

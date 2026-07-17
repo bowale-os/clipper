@@ -1,86 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useParams, useNavigate } from 'react-router-dom'
-import DashboardLayout from '../components/DashboardLayout'
-import { ApiError, getVideoMoments, createClip } from '../services/api'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import AppLayout from '../components/AppLayout'
+import MomentCard from '../components/MomentCard'
+import EmptyState from '../components/EmptyState'
+import StatusPill from '../components/StatusPill'
+import { ScissorsIcon } from '../components/icons'
+import { createClip, getVideoMoments } from '../services/api'
 import { useAuthedApi } from '../hooks/useAuthedApi'
+import { formatClock } from '../lib/format'
+import { getReadableError } from '../lib/errors'
 
-function getReadableError(error) {
-  if (error instanceof ApiError) {
-    return error.status ? `${error.message} (${error.status})` : error.message
-  }
-  if (error instanceof Error) {
-    return error.message
-  }
-  return 'Moments could not be loaded.'
-}
-
-function formatClock(totalSeconds) {
-  const safeSeconds = Number.isFinite(Number(totalSeconds)) ? Math.max(0, Math.floor(Number(totalSeconds))) : 0
-  const hours = Math.floor(safeSeconds / 3600)
-  const minutes = Math.floor((safeSeconds % 3600) / 60)
-  const seconds = safeSeconds % 60
-
-  if (hours > 0) {
-    return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
-  }
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-}
-
-function getMomentStart(moment) {
-  return moment?.start_sec ?? moment?.start ?? moment?.start_time ?? moment?.timestamp ?? 0
-}
-
-function getMomentEnd(moment) {
-  return moment?.end_sec ?? moment?.end ?? moment?.end_time ?? null
-}
-
-function getMomentTitle(moment, index) {
-  return moment?.title || moment?.headline || moment?.label || moment?.summary || `Moment ${index + 1}`
-}
-
-function getMomentDescription(moment) {
-  return moment?.description || moment?.reason || moment?.text || moment?.transcript || moment?.hook || ''
-}
-
-function getMomentScore(moment) {
-  return moment?.score ?? moment?.confidence ?? moment?.rating ?? null
-}
-
-function MomentCard({ index, moment, videoId, onCreateClip, isCreating }) {
-  const start = getMomentStart(moment)
-  const end = getMomentEnd(moment)
-  const score = getMomentScore(moment)
-  const description = getMomentDescription(moment)
-
-  const handleGetClip = () => {
-    onCreateClip(moment, index)
-  }
-
-  return (
-    <article className="moment-card">
-      <div className="moment-card-header">
-        <div>
-          <p className="panel-label">
-            {formatClock(start)}
-            {end != null ? ` - ${formatClock(end)}` : ''}
-          </p>
-          <h3>{getMomentTitle(moment, index)}</h3>
-
-          <button 
-            className="button button-primary"
-            onClick={handleGetClip}
-            disabled={isCreating === index}
-          >
-            {isCreating === index ? 'Creating Clip...' : 'Get Clip'}
-          </button>
-        </div>
-        
-        {score != null && <span className="moment-score">{score}</span>}
-      </div>
-
-      {description && <p className="moment-description">{description}</p>}
-    </article>
-  )
+function getFinalScore(moment) {
+  const value = Number(moment?.scores?.final)
+  return Number.isFinite(value) ? value : 0
 }
 
 function Moments() {
@@ -91,9 +23,13 @@ function Moments() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(true)
-  const [creatingClipFor, setCreatingClipFor] = useState(null)
+  const [generatingIndex, setGeneratingIndex] = useState(null)
 
-  const moments = useMemo(() => (Array.isArray(data?.moments) ? data.moments : []), [data?.moments])
+  // Best moments first — that ordering is the whole point of the screen.
+  const moments = useMemo(() => {
+    const list = Array.isArray(data?.moments) ? [...data.moments] : []
+    return list.sort((a, b) => getFinalScore(b) - getFinalScore(a))
+  }, [data])
 
   const loadMoments = useCallback(async () => {
     if (!videoId) {
@@ -108,112 +44,116 @@ function Moments() {
       const momentsData = await runWithToken((token) => getVideoMoments({ token, videoId }))
       setData(momentsData)
     } catch (loadError) {
-      setError(getReadableError(loadError))
+      setError(getReadableError(loadError, 'Moments could not be loaded.'))
     } finally {
       setIsLoading(false)
     }
   }, [runWithToken, videoId])
 
-  const handleCreateClip = useCallback(async (moment, index) => {
-    const startSec = getMomentStart(moment)
-    let endSec = getMomentEnd(moment)
-
-    if (endSec == null) {
-      endSec = Math.min(startSec + 30, data?.duration || startSec + 30)
-    }
-
-    try {
-      setCreatingClipFor(index)
-
-      const clipData = await runWithToken((token) =>
-        createClip({ videoId, startSec, endSec, token })
-      )
-
-      if (!clipData?.url) {
-        throw new Error('Clip created but no URL was returned')
-      }
-
-      navigate(`/videos/${videoId}/moments/${index}/clip`, {
-        state: { 
-          clipUrl: clipData.url, 
-          clipId: clipData.clip_id, 
-          startSec, 
-          endSec 
-        }
-      })
-    } catch (err) {
-      alert(`Failed to create clip: ${err.message || 'Unknown error'}`)
-    } finally {
-      setCreatingClipFor(null)
-    }
-  }, [runWithToken, videoId, navigate, data?.duration])
-
   useEffect(() => {
-    loadMoments()
+    // Deferred a tick so the load doesn't set state from the effect body.
+    const timeoutId = window.setTimeout(loadMoments, 0)
+    return () => window.clearTimeout(timeoutId)
   }, [loadMoments])
 
+  // Rendering is queued on a worker, so we hand the clip id to the viewer and
+  // let it poll rather than blocking this page.
+  const handleGenerate = useCallback(
+    async ({ moment, index, format, captions }) => {
+      const startSec = Number(moment.start_sec)
+      const endSec = Number(moment.end_sec)
+
+      try {
+        setGeneratingIndex(index)
+        setError('')
+
+        const clip = await runWithToken((token) =>
+          createClip({ videoId, startSec, endSec, format, captions, momentId: moment.id, token }),
+        )
+
+        navigate(`/videos/${videoId}/moments/${index}/clip`, {
+          state: {
+            clipId: clip.clip_id,
+            startSec,
+            endSec,
+            format,
+            captions,
+            title: moment.title,
+          },
+        })
+      } catch (createError) {
+        setError(getReadableError(createError, 'The clip could not be queued.'))
+        setGeneratingIndex(null)
+      }
+    },
+    [navigate, runWithToken, videoId],
+  )
+
+  const isAnalyzing = data?.status === 'processing' || data?.status === 'uploaded'
+
   return (
-    <DashboardLayout eyebrow="Detected moments" title={data?.filename || 'Video moments'}>
-      <section className="moments-page">
-        <div className="videos-toolbar">
-          <div>
-            <p className="panel-label">Review</p>
-            <h2>Top moments, ranked</h2>
-          </div>
-          <div className="moments-toolbar-actions">
-            <Link className="button button-secondary" to="/videos">
-              Back to videos
-            </Link>
-            <button 
-              className="button button-secondary" 
-              type="button" 
-              onClick={loadMoments} 
-              disabled={isLoading}
-            >
-              {isLoading ? 'Refreshing...' : 'Refresh'}
-            </button>
-          </div>
+    <AppLayout
+      eyebrow="Moments"
+      title={data?.filename || 'Your best moments'}
+      actions={
+        <>
+          <Link className="button button-secondary" to="/videos">
+            Back to library
+          </Link>
+          <button className="button button-secondary" disabled={isLoading} onClick={loadMoments} type="button">
+            {isLoading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </>
+      }
+    >
+      <div className="moments-summary">
+        {data?.status ? <StatusPill status={data.status} /> : null}
+        {moments.length ? (
+          <span>
+            {moments.length} moments worth posting — you're one click away from {moments.length} clips.
+          </span>
+        ) : null}
+        {data?.duration != null ? <span className="mono">{formatClock(data.duration, { includeHours: true })}</span> : null}
+      </div>
+
+      {error ? <p className="message error">{error}</p> : null}
+
+      {isLoading ? (
+        <div className="moment-list">
+          {Array.from({ length: 3 }, (_, index) => (
+            <div className="skeleton skeleton-card" key={index} />
+          ))}
         </div>
-
-        {error && <div className="upload-message error">{error}</div>}
-
-        {isLoading ? (
-          <div className="dashboard-panel videos-loading">Loading moments...</div>
-        ) : (
-          <section className="dashboard-panel moments-panel">
-            <div className="panel-heading">
-              <div>
-                <p className="panel-label">{data?.status || 'unknown'} status</p>
-                <h2>{moments.length} detected moments</h2>
-              </div>
-              {data?.duration != null && (
-                <span className="moment-duration">{formatClock(data.duration)}</span>
-              )}
-            </div>
-
-            {moments.length > 0 ? (
-              <div className="moments-list">
-                {moments.map((moment, index) => (
-                  <MomentCard
-                    key={`${getMomentStart(moment)}-${index}`}
-                    index={index}
-                    moment={moment}
-                    videoId={videoId}
-                    onCreateClip={handleCreateClip}
-                    isCreating={creatingClipFor}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="videos-empty">
-                <strong>No moments yet.</strong>
-                <span>Analysis may still be running — check back in a few minutes.</span>
-              </div>
-            )}
-          </section>
-        )}
-      </section>
-    </DashboardLayout>
+      ) : moments.length ? (
+        <div className="moment-list">
+          {moments.map((moment, index) => (
+            <MomentCard
+              index={index}
+              isGenerating={generatingIndex === index}
+              isTop={index === 0}
+              key={moment.id || index}
+              moment={moment}
+              onGenerate={handleGenerate}
+            />
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          action={
+            <Link className="button button-secondary" to="/videos">
+              Back to library
+            </Link>
+          }
+          description={
+            isAnalyzing
+              ? "We're still watching this one. Moments show up here as soon as the analysis finishes — usually a few minutes."
+              : 'No moments were found in this video. Try a longer stream, or cut a clip manually.'
+          }
+          glyph={<ScissorsIcon size={22} />}
+          title={isAnalyzing ? 'Still analyzing' : 'No moments found'}
+        />
+      )}
+    </AppLayout>
   )
 }
 

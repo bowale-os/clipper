@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.common import get_owned_video
 from app.db.models import Moment, User, Video, VideoStatus
 from app.db.session import get_db
 from app.dependencies.user import get_current_user_record
@@ -22,6 +23,7 @@ from app.services.r2_client import (
     head_object_size,
     list_uploaded_parts,
 )
+from app.workers.queues import io_queue
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,6 @@ class CompletePart(BaseModel):
 
 class CompleteVideoRequest(BaseModel):
     video_id: uuid.UUID
-    auto_detect: bool = False
     content_type: str = "default"
     parts: list[CompletePart] | None = None
 
@@ -61,13 +62,6 @@ class SignPartsRequest(BaseModel):
 
 
 v_router = APIRouter()
-
-
-def _get_owned_video(db: Session, video_id: uuid.UUID, user: User) -> Video:
-    video = db.scalar(select(Video).where(Video.id == video_id, Video.user_id == user.id))
-    if video is None:
-        raise HTTPException(status_code=404, detail="Video not found")
-    return video
 
 
 def _video_to_dict(video: Video) -> dict:
@@ -166,7 +160,7 @@ def sign_upload_parts(
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
 ):
-    video = _get_owned_video(db, video_id, user)
+    video = get_owned_video(db, video_id, user)
     upload = _upload_state(video)
 
     if video.status != VideoStatus.uploading or upload.get("mode") != "multipart":
@@ -191,7 +185,7 @@ def get_upload_status(
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
 ):
-    video = _get_owned_video(db, video_id, user)
+    video = get_owned_video(db, video_id, user)
 
     if video.status != VideoStatus.uploading:
         return {"status": video.status.value, "resumable": False}
@@ -241,7 +235,7 @@ def complete_video_upload(
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
 ):
-    video = _get_owned_video(db, request.video_id, user)
+    video = get_owned_video(db, request.video_id, user)
 
     if video.status != VideoStatus.uploading:
         # Retried/duplicated complete calls are fine.
@@ -277,9 +271,9 @@ def complete_video_upload(
     _clear_upload_state(video)
     db.commit()
 
-    # TODO(v2): enqueue ingest -> transcribe -> detect pipeline (RQ workers, ARCHITECTURE §7)
-    if request.auto_detect:
-        logger.info("auto_detect requested for video %s; pipeline enqueue not implemented yet", video.id)
+    # Every video runs the full ingest -> transcribe -> detect chain; each stage enqueues
+    # the next. Clients read the moments back from GET /videos/{id}/moments once ready.
+    io_queue.enqueue("app.tasks.ingest.ingest", str(video.id))
 
     return {"message": "Upload complete", "video_id": str(video.id)}
 
@@ -290,7 +284,7 @@ def abort_video_upload(
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
 ):
-    video = _get_owned_video(db, video_id, user)
+    video = get_owned_video(db, video_id, user)
 
     if video.status != VideoStatus.uploading:
         raise HTTPException(status_code=409, detail="Video is not uploading")
@@ -336,7 +330,7 @@ def get_video_metadata(
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
 ):
-    video = _get_owned_video(db, video_id, user)
+    video = get_owned_video(db, video_id, user)
     # TODO(v2): the ingest worker fills duration_sec after upload; until then it may be null.
     return {
         "duration": float(video.duration_sec) if video.duration_sec is not None else None,
@@ -350,7 +344,7 @@ def get_video_moments(
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
 ):
-    video = _get_owned_video(db, video_id, user)
+    video = get_owned_video(db, video_id, user)
 
     moments = db.scalars(
         select(Moment).where(Moment.video_id == video.id).order_by(Moment.created_at)
@@ -383,7 +377,7 @@ def delete_video(
     db: Session = Depends(get_db),
 ):
     logger.info("Delete video requested: video_id=%s user_id=%s", video_id, user.id)
-    video = _get_owned_video(db, video_id, user)
+    video = get_owned_video(db, video_id, user)
 
     upload = _upload_state(video)
     if video.status == VideoStatus.uploading and upload.get("mode") == "multipart":

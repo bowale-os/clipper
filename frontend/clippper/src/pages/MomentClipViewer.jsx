@@ -1,71 +1,50 @@
-import { useLocation, useParams, Link } from 'react-router-dom'
-import { useEffect, useState } from 'react'
-import DashboardLayout from '../components/DashboardLayout'
+import { Link, useLocation, useParams } from 'react-router-dom'
+import AppLayout from '../components/AppLayout'
+import ClipRenderCard from '../components/ClipRenderCard'
+import EmptyState from '../components/EmptyState'
+import { ArrowLeftIcon } from '../components/icons'
 
 function MomentClipViewer() {
   const { videoId, momentIndex } = useParams()
   const location = useLocation()
-  const { clipUrl, clipId, startSec, endSec } = location.state || {}
+  const { clipId, startSec, endSec, format, captions, title } = location.state || {}
+  const momentsPath = `/videos/${videoId}/moments`
 
-  const [videoError, setVideoError] = useState(false)
+  const backLink = (
+    <Link className="button button-secondary" to={momentsPath}>
+      <ArrowLeftIcon size={16} />
+      Back to moments
+    </Link>
+  )
 
-  if (!clipUrl) {
+  // Route state is the only carrier for the clip id, so a refresh or a deep link
+  // lands here empty.
+  if (!clipId) {
     return (
-      <DashboardLayout eyebrow="Clip Viewer" title="Error">
-        <div className="upload-message error">
-          No clip URL available. Go back and try again.
-        </div>
-        <Link to={`/videos/${videoId}/moments`} className="button button-secondary">
-          ← Back to Moments
-        </Link>
-      </DashboardLayout>
+      <AppLayout eyebrow="Clip" title="We lost track of this clip">
+        <EmptyState
+          action={backLink}
+          description="Head back to the moments list and generate it again — it only takes a click."
+          title="Nothing to show here"
+        />
+      </AppLayout>
     )
   }
 
   return (
-    <DashboardLayout 
-      eyebrow="Moment Clip" 
-      title={`Moment ${Number(momentIndex) + 1}`}
-    >
-      <section className="moment-clip-viewer">
-        <Link to={`/videos/${videoId}/moments`} className="button button-secondary">
-          ← Back to Moments
-        </Link>
+    <AppLayout eyebrow="Clip" title={title || `Moment ${Number(momentIndex) + 1}`}>
+      <div className="viewer-back">{backLink}</div>
 
-        <div className="clip-player-container">
-          <div className="clip-info">
-            <strong>
-              {startSec !== undefined && endSec !== undefined 
-                ? `${Math.floor(startSec)}s - ${Math.floor(endSec)}s` 
-                : ''}
-            </strong>
-            {clipId && <span>Clip ID: {clipId}</span>}
-          </div>
-
-          <video 
-            controls 
-            autoPlay 
-            className="moment-video-player"
-            onError={() => setVideoError(true)}
-          >
-            <source src={clipUrl} type="video/mp4" />
-            Your browser does not support the video tag.
-          </video>
-
-          {videoError && (
-            <p className="error">Failed to load video. The clip URL may be expired.</p>
-          )}
-
-          <a 
-            href={clipUrl} 
-            download 
-            className="button button-primary"
-          >
-            Download Clip
-          </a>
-        </div>
-      </section>
-    </DashboardLayout>
+      <div className="viewer-panel">
+        <ClipRenderCard
+          captions={captions}
+          clipId={clipId}
+          endSec={endSec}
+          format={format}
+          startSec={startSec}
+        />
+      </div>
+    </AppLayout>
   )
 }
 

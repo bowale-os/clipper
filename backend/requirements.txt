@@ -9,5 +9,7 @@ pyjwt[cryptography]
 sqlalchemy>=2.0
 alembic
 psycopg2-binary
-redis
+redis[hiredis]
 rq
+groq
+google-genai

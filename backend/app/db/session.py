@@ -1,5 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from contextlib import contextmanager
 
 from app.config.secrets import settings
 
@@ -32,3 +33,19 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+@contextmanager
+def session_scope():
+    if SessionLocal is None:
+        get_engine()
+        
+    session = SessionLocal()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

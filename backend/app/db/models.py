@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, ForeignKey, Numeric, String, Text, Uuid
+from sqlalchemy import BigInteger, ForeignKey, Numeric, String, Text, Uuid, Index, desc, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, DateTime, Enum, Integer
@@ -57,6 +57,8 @@ class Video(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+
+
 
 
 class Transcript(Base):
@@ -157,3 +159,16 @@ class MomentEvent(Base):
     action: Mapped[str] = mapped_column(String, nullable=False)  # keep|dismiss|export|adjust_bounds|more_like_this
     payload: Mapped[dict] = mapped_column(JSONVariant, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+Index("videos_user_idx", Video.user_id, Video.created_at.desc())
+
+Index(
+    "moments_video_run_idx",
+    Moment.video_id,
+    Moment.run_id,
+    desc(text("(scores->>'final')")),
+)
+
+Index("clips_video_idx", Clip.video_id, Clip.created_at.desc())
+Index("jobs_video_idx", Job.video_id, Job.created_at.desc())

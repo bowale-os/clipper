@@ -1,46 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import DashboardLayout from '../components/DashboardLayout'
-import { ApiError, createClip, getVideoMetadata } from '../services/api'
+import AppLayout from '../components/AppLayout'
+import ClipRenderCard from '../components/ClipRenderCard'
+import EmptyState from '../components/EmptyState'
+import FormatPicker from '../components/FormatPicker'
+import Toggle from '../components/Toggle'
+import { ScissorsIcon } from '../components/icons'
+import { DEFAULT_CLIP_FORMAT, createClip, getVideoMetadata } from '../services/api'
 import { useAuthedApi } from '../hooks/useAuthedApi'
+import { formatClock } from '../lib/format'
+import { getReadableError } from '../lib/errors'
 
-const initialForm = {
-  start: '0',
-  end: '60',
-}
-
-function getReadableError(error, fallback) {
-  if (error instanceof ApiError) {
-    return error.status ? `${error.message} (${error.status})` : error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return fallback
-}
+const MAX_CLIP_SEC = 600
 
 function parseSeconds(value) {
-  if (value === '') {
-    return Number.NaN
-  }
-
-  return Number(value)
-}
-
-function formatClock(totalSeconds, { includeHours = false } = {}) {
-  const safeSeconds = Number.isFinite(totalSeconds) ? Math.max(0, Math.floor(totalSeconds)) : 0
-  const hours = Math.floor(safeSeconds / 3600)
-  const minutes = Math.floor((safeSeconds % 3600) / 60)
-  const seconds = safeSeconds % 60
-
-  if (includeHours) {
-    return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':')
-  }
-
-  const totalMinutes = Math.floor(safeSeconds / 60)
-  return `${String(totalMinutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  return value === '' ? Number.NaN : Number(value)
 }
 
 function buildValidation({ duration, endSec, startSec }) {
@@ -72,12 +46,10 @@ function buildValidation({ duration, endSec, startSec }) {
 
   const clipLength = endSec - startSec
 
-  if (clipLength < 1) {
+  if (clipLength >= 1 && clipLength > MAX_CLIP_SEC) {
+    errors.push(`Clips can be at most ${MAX_CLIP_SEC / 60} minutes long.`)
+  } else if (clipLength < 1) {
     errors.push('Clip must be at least 1 second long.')
-  }
-
-  if (clipLength > 600) {
-    errors.push('Clip must be 600 seconds or shorter.')
   }
 
   return errors
@@ -86,14 +58,16 @@ function buildValidation({ duration, endSec, startSec }) {
 function ClipEditor() {
   const { videoId } = useParams()
   const { runWithToken } = useAuthedApi()
+
   const [metadata, setMetadata] = useState(null)
   const [metadataError, setMetadataError] = useState('')
   const [isMetadataLoading, setIsMetadataLoading] = useState(true)
-  const [form, setForm] = useState(initialForm)
+  const [form, setForm] = useState({ start: '0', end: '60' })
+  const [format, setFormat] = useState(DEFAULT_CLIP_FORMAT)
+  const [captions, setCaptions] = useState(true)
   const [clips, setClips] = useState([])
   const [submitError, setSubmitError] = useState('')
   const [isCreating, setIsCreating] = useState(false)
-  const [showHours, setShowHours] = useState(false)
 
   const startSec = useMemo(() => parseSeconds(form.start), [form.start])
   const endSec = useMemo(() => parseSeconds(form.end), [form.end])
@@ -102,7 +76,6 @@ function ClipEditor() {
     [endSec, metadata?.duration, startSec],
   )
   const canCreateClip = !isMetadataLoading && !isCreating && !metadataError && validationErrors.length === 0
-  const metadataPath = videoId ? `/videos/${videoId}/metadata` : '/videos/{video_id}/metadata'
 
   const loadMetadata = useCallback(async () => {
     if (!videoId) {
@@ -124,18 +97,13 @@ function ClipEditor() {
   }, [runWithToken, videoId])
 
   useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      loadMetadata()
-    }, 0)
-
+    // Deferred a tick so the load doesn't set state from the effect body.
+    const timeoutId = window.setTimeout(loadMetadata, 0)
     return () => window.clearTimeout(timeoutId)
   }, [loadMetadata])
 
   function updateField(field, value) {
-    setForm((current) => ({
-      ...current,
-      [field]: value,
-    }))
+    setForm((current) => ({ ...current, [field]: value }))
     setSubmitError('')
   }
 
@@ -149,122 +117,82 @@ function ClipEditor() {
     try {
       setIsCreating(true)
       setSubmitError('')
-      const data = await runWithToken((token) =>
-        createClip({
-          endSec,
-          startSec,
-          token,
-          videoId,
-        }),
+
+      const clip = await runWithToken((token) =>
+        createClip({ videoId, startSec, endSec, format, captions, token }),
       )
 
-      if (!data?.url || !data?.clip_id) {
-        throw new ApiError('The clip was created, but the server response was incomplete.', {
-          details: data,
-        })
-      }
-
-      setClips((current) => [
-        {
-          clipId: data.clip_id,
-          endSec,
-          startSec,
-          url: data.url,
-        },
-        ...current,
-      ])
+      // The render is queued; each card polls itself until its file lands.
+      setClips((current) => [{ clipId: clip.clip_id, startSec, endSec, format, captions }, ...current])
     } catch (error) {
-      setSubmitError(getReadableError(error, 'The clip could not be created.'))
+      setSubmitError(getReadableError(error, 'The clip could not be queued.'))
     } finally {
       setIsCreating(false)
     }
   }
 
   return (
-    <DashboardLayout eyebrow="Clip editor" title="Cut a highlight from this video.">
-      <section className="clip-editor-page">
-        <div className="clip-editor-topline">
-          <Link className="button button-secondary" to="/videos">
-            Back to videos
-          </Link>
+    <AppLayout
+      eyebrow="Manual cut"
+      title={isMetadataLoading ? 'Loading video…' : metadata?.filename || 'Untitled video'}
+      actions={
+        <Link className="button button-secondary" to="/videos">
+          Back to library
+        </Link>
+      }
+    >
+      {metadataError ? (
+        <div className="message error">
+          <span>{metadataError}</span>
+          <button className="button button-secondary" type="button" onClick={loadMetadata}>
+            Retry
+          </button>
         </div>
+      ) : null}
 
-        <section className="dashboard-panel clip-metadata-panel">
-          <div>
-            <p className="panel-label">Source video</p>
-            <h2>{isMetadataLoading ? 'Loading metadata...' : metadata?.filename || 'Untitled video'}</h2>
-          </div>
-          <div className="clip-time-controls">
-            <span>
-              {metadata?.duration != null
-                ? formatClock(metadata.duration, { includeHours: showHours })
-                : formatClock(0, { includeHours: showHours })}
-            </span>
-            <div className="time-format-toggle" aria-label="Time format" role="group">
-              <button
-                aria-pressed={!showHours}
-                className={!showHours ? 'active' : ''}
-                onClick={() => setShowHours(false)}
-                type="button"
-              >
-                MM:SS
-              </button>
-              <button
-                aria-pressed={showHours}
-                className={showHours ? 'active' : ''}
-                onClick={() => setShowHours(true)}
-                type="button"
-              >
-                HH:MM:SS
-              </button>
+      <div className="clip-editor-grid">
+        <form className="card" onSubmit={handleSubmit}>
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Trim</p>
+              <h2>Pick your in and out</h2>
             </div>
+            {metadata?.duration != null ? (
+              <span className="mono">{formatClock(metadata.duration, { includeHours: true })} total</span>
+            ) : null}
           </div>
-        </section>
 
-        {metadataError ? (
-          <div className="upload-message error metadata-message">
-            <span>{metadataError}</span>
-            <button className="button button-secondary" type="button" onClick={loadMetadata}>
-              Retry metadata
-            </button>
-          </div>
-        ) : null}
-
-        {isMetadataLoading ? (
-          <div className="metadata-request-status" aria-live="polite">
-            Requesting GET {metadataPath}
-          </div>
-        ) : null}
-
-        <form className="dashboard-panel clip-form" onSubmit={handleSubmit}>
-          <div className="clip-field-grid">
-            <label className="clip-field">
-              <span>Start time</span>
-              <div className="clip-input-row">
-                <input
-                  min="0"
-                  onChange={(event) => updateField('start', event.target.value)}
-                  step="0.1"
-                  type="number"
-                  value={form.start}
-                />
-                <strong>{formatClock(startSec, { includeHours: showHours })}</strong>
-              </div>
+          <div className="clip-field-row">
+            <label className="field">
+              <span>Start (seconds)</span>
+              <input
+                className="input"
+                min="0"
+                onChange={(event) => updateField('start', event.target.value)}
+                step="0.1"
+                type="number"
+                value={form.start}
+              />
+              <span className="clip-field-hint">{formatClock(startSec, { includeHours: true })}</span>
             </label>
 
-            <label className="clip-field">
-              <span>End time</span>
-              <div className="clip-input-row">
-                <input
-                  min="0"
-                  onChange={(event) => updateField('end', event.target.value)}
-                  step="0.1"
-                  type="number"
-                  value={form.end}
-                />
-                <strong>{formatClock(endSec, { includeHours: showHours })}</strong>
-              </div>
+            <label className="field">
+              <span>End (seconds)</span>
+              <input
+                className="input"
+                min="0"
+                onChange={(event) => updateField('end', event.target.value)}
+                step="0.1"
+                type="number"
+                value={form.end}
+              />
+              <span className="clip-field-hint">{formatClock(endSec, { includeHours: true })}</span>
             </label>
+          </div>
+
+          <div className="clip-form-options">
+            <FormatPicker disabled={isCreating} onChange={setFormat} value={format} />
+            <Toggle checked={captions} disabled={isCreating} label="Captions" onChange={setCaptions} />
           </div>
 
           {validationErrors.length ? (
@@ -275,54 +203,44 @@ function ClipEditor() {
             </div>
           ) : null}
 
-          {submitError ? (
-            <div className="upload-message error">
-              {submitError}
-            </div>
-          ) : null}
+          {submitError ? <p className="message error">{submitError}</p> : null}
 
-          <button className="button button-primary clip-submit" disabled={!canCreateClip} type="submit">
-            {isCreating ? 'Cutting clip...' : 'Cut Clip'}
+          <button className="button button-primary button-large button-block" disabled={!canCreateClip} type="submit">
+            {isCreating ? 'Sending to render…' : 'Cut this clip'}
           </button>
         </form>
 
-        <section className="dashboard-panel created-clips-panel">
+        <section className="card">
           <div className="panel-heading">
             <div>
-              <p className="panel-label">{clips.length} clips</p>
-              <h2>Created clips</h2>
+              <p className="eyebrow">{clips.length} clips</p>
+              <h2>Your cuts</h2>
             </div>
           </div>
 
           {clips.length ? (
-            <div className="created-clips-list">
+            <div className="clip-results">
               {clips.map((clip) => (
-                <article className="created-clip" key={clip.clipId}>
-                  <div className="created-clip-meta">
-                    <strong>
-                      {formatClock(clip.startSec, { includeHours: showHours })} -{' '}
-                      {formatClock(clip.endSec, { includeHours: showHours })}
-                    </strong>
-                    <span>{clip.clipId}</span>
-                  </div>
-                  <video controls src={clip.url}>
-                    <track kind="captions" />
-                  </video>
-                  <a className="button button-secondary clip-download" download href={clip.url}>
-                    Download
-                  </a>
-                </article>
+                <ClipRenderCard
+                  captions={clip.captions}
+                  clipId={clip.clipId}
+                  endSec={clip.endSec}
+                  format={clip.format}
+                  key={clip.clipId}
+                  startSec={clip.startSec}
+                />
               ))}
             </div>
           ) : (
-            <div className="videos-empty">
-              <strong>No clips cut yet.</strong>
-              <span>Choose a valid start and end time, then cut your first clip.</span>
-            </div>
+            <EmptyState
+              description="Set a start and end, then cut. Clips render in the background and show up right here."
+              glyph={<ScissorsIcon size={22} />}
+              title="No cuts yet"
+            />
           )}
         </section>
-      </section>
-    </DashboardLayout>
+      </div>
+    </AppLayout>
   )
 }
 

@@ -12,7 +12,6 @@ class Settings(BaseSettings):
         case_sensitive=True        # Important!
     )
 
-    MONGO_CONNECT: Optional[str] = None    # legacy v1, unused
     SECRET_KEY: str
     CLERK_SECRET_KEY: str
     CLERK_WEBHOOK_SIGNING_SECRET: str
@@ -26,7 +25,9 @@ class Settings(BaseSettings):
 
     
     # "v1" (default, Mongo/Modal) | "v2" (Postgres/RQ)
-    NEON_DB_CONNECT: Optional[str] = None        # Neon Postgres connection string
-    REDIS_URL: Optional[str] = None              # Railway Redis plugin connection string
+    NEON_DB_CONNECT: str     # Neon Postgres connection string
+    REDIS_URL: str            # Railway Redis plugin connection string
+    GROQ_API_KEY: str
+    GEMINI_API_KEY: str
 
 settings = Settings()

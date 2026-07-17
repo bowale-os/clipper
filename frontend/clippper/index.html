@@ -11,6 +11,18 @@
       rel="stylesheet"
     />
     <title>clippper</title>
+    <script>
+      // Applies the saved theme before first paint so reloads don't flash the
+      // wrong one. Kept in sync by src/theme/ThemeProvider.jsx.
+      (function () {
+        try {
+          var saved = localStorage.getItem('clippper-theme')
+          document.documentElement.dataset.theme = saved === 'light' ? 'light' : 'dark'
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

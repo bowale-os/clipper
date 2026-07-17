@@ -51,6 +51,13 @@ def upload_file(local_file_path: str, r2_key: str):
         Key=r2_key
     )
 
+def download_file(r2_key: str, local_path: str) -> None:
+    r2 = get_r2_client()
+    r2.download_file(
+        Bucket=settings.R2_BUCKET_NAME,
+        Key=r2_key,
+        Filename=local_path)
+
 
 def delete_file(r2_key: str):
     """Optional: Delete a file from R2"""
@@ -60,7 +67,42 @@ def delete_file(r2_key: str):
         Key=r2_key
     )
 
+def upload_bytes(data: bytes, r2_key: str, content_type: str) -> None:
+    r2 = get_r2_client()
+    r2.put_object(
+        Bucket=settings.R2_BUCKET_NAME,
+        Key=r2_key,
+        Body=data,
+        ContentType=content_type,
+    )
 
+def download_bytes(r2_key: str) -> bytes:
+    """Read a whole object into memory — for small JSON artifacts (words, features)."""
+    r2 = get_r2_client()
+    resp = r2.get_object(Bucket=settings.R2_BUCKET_NAME, Key=r2_key)
+    return resp["Body"].read()
+
+def delete_prefix(prefix: str) -> int:
+    r2 = get_r2_client()
+
+    paginator = r2.get_paginator(f"{prefix}")
+    pages = paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix=prefix)
+
+    deleted_count = 0
+    for page in pages:
+        if "Contents" not in page:
+            continue  # No files found for this page
+
+        # Prepare delete request (max 1000 keys per request)
+        objects_to_delete = [{"Key": obj["Key"]} for obj in page["Contents"]]
+        r2.delete_objects(
+            Bucket=settings.R2_BUCKET_NAME,
+            Delete={"Objects": objects_to_delete}
+        )
+        deleted_count += len(objects_to_delete)
+        return deleted_count
+    
+    
 # --- Multipart upload (large files) ---
 
 PART_URL_EXPIRES = 3600  # frontend re-signs on 403, so 1h is plenty

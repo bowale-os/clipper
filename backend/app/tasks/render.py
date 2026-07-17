@@ -1,0 +1,313 @@
+import json
+import os
+import shutil
+import subprocess
+import tempfile
+import time
+import uuid
+
+from sqlalchemy.orm import Session
+
+from app.db.models import Clip
+from app.workers.contract import TaskContext, job_contract
+from app.services.r2_client import download_bytes, download_file, upload_file
+
+# Output presets: aspect ratio -> exact (width, height). 9:16 is the short-form default.
+FORMATS = {
+    "9:16": (1080, 1920),
+    "1:1": (1080, 1080),
+    "16:9": (1920, 1080),
+}
+DEFAULT_FORMAT = "9:16"
+X264_CRF = "20"           # quality; lower = better + bigger. 20 is a good social default.
+X264_PRESET = "veryfast"  # encode speed vs filesize. Workers are CPU-bound, so favour speed.
+
+# Caption cue shaping. A cue is the group of words shown on screen at one time.
+CAPTION_MAX_CHARS = 42    # longer than this wraps badly on a phone
+CAPTION_MAX_SEC = 3.0     # a cue held longer than this reads as stalled
+CAPTION_GAP_SEC = 0.6     # a pause at least this long ends the current cue
+
+# ASS style applied to the burnt-in captions. Alignment=2 is bottom-centre; the outline
+# keeps white text legible over bright footage. Typeface and size are left to libass.
+CAPTION_STYLE = (
+    "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+    "BorderStyle=1,Outline=3,Shadow=0,"
+    "Alignment=2,MarginV=180"
+)
+SRT_FILENAME = "captions.srt"
+
+
+def _load_clip(ctx: TaskContext) -> Clip:
+    """Load the Clip this job renders.
+
+    The contract keys jobs on video_id, but render works on one clip, so create_clip
+    passes the target through params.
+    """
+    clip_id = ctx.params.get("clip_id")
+    if not clip_id:
+        raise RuntimeError("render requires params['clip_id']")
+    clip = ctx.db.get(Clip, uuid.UUID(clip_id))
+    if clip is None:
+        raise RuntimeError(f"Clip {clip_id} not found")
+    return clip
+
+
+def _render_done(ctx: TaskContext) -> bool:
+    """Render's artifact is the file in R2, not the Clip row — create_clip already made
+    that before this job was enqueued. A populated r2_key is the proof it rendered."""
+    clip = _load_clip(ctx)
+    return clip.status == "ready" and clip.r2_key is not None
+
+
+def _mark_clip_failed(session: Session, params: dict, err: Exception) -> None:
+    """Record the clip as errored inside the contract's failure transaction.
+
+    Without this the clip would stay "queued" forever: the "rendering" write happens in
+    the task's session, which is rolled back on the way out, so the frontend would poll
+    a clip that never resolves.
+    """
+    clip_id = params.get("clip_id")
+    if not clip_id:
+        return
+    clip = session.get(Clip, uuid.UUID(clip_id))
+    if clip is None:
+        return
+    clip.status = "error"
+
+
+def _load_words(ctx: TaskContext) -> list[dict]:
+    """Fetch the word-level timings transcribe wrote to R2.
+
+    Returns an empty list when the video has no words artifact, so a missing transcript
+    degrades to an uncaptioned clip instead of failing the render.
+    """
+    words_key = (ctx.video.artifacts or {}).get("words_key")
+    if not words_key:
+        return []
+    return json.loads(download_bytes(words_key))
+
+
+def _words_in_window(words: list[dict], start: float, end: float) -> list[dict]:
+    """Keep the words spoken inside [start, end], rebased so the clip begins at zero.
+
+    ffmpeg burns subtitles against the output timeline, which starts at 0, but the words
+    carry absolute source timestamps — so each one is shifted back by `start`. Words that
+    straddle a boundary are clamped to it rather than dropped.
+    """
+    selected = []
+    for word in words:
+        word_start = float(word["start"])
+        word_end = float(word["end"])
+
+        if word_end <= start:
+            continue
+        if word_start >= end:
+            continue
+
+        clamped_start = max(word_start, start)
+        clamped_end = min(word_end, end)
+        selected.append({
+            "text": word["word"].strip(),
+            "start": clamped_start - start,
+            "end": clamped_end - start,
+        })
+    return selected
+
+
+def _should_end_cue(current: list[dict], word: dict) -> bool:
+    """Decide whether `word` starts a new cue instead of joining the current one.
+
+    A cue ends when adding the word would overflow the line, hold the cue on screen too
+    long, or when there is a real pause between the words.
+    """
+    pending_text = " ".join(entry["text"] for entry in current) + " " + word["text"]
+    if len(pending_text) > CAPTION_MAX_CHARS:
+        return True
+
+    cue_duration = word["end"] - current[0]["start"]
+    if cue_duration > CAPTION_MAX_SEC:
+        return True
+
+    gap = word["start"] - current[-1]["end"]
+    if gap >= CAPTION_GAP_SEC:
+        return True
+
+    return False
+
+
+def _group_into_cues(words: list[dict]) -> list[list[dict]]:
+    """Group words into on-screen cues."""
+    cues = []
+    current = []
+
+    for word in words:
+        if not current:
+            current.append(word)
+            continue
+
+        if _should_end_cue(current, word):
+            cues.append(current)
+            current = [word]
+        else:
+            current.append(word)
+
+    if current:
+        cues.append(current)
+
+    return cues
+
+
+def _srt_timestamp(seconds: float) -> str:
+    """Seconds -> 'HH:MM:SS,mmm', the timestamp format SRT requires."""
+    if seconds < 0:
+        seconds = 0.0
+    total_ms = int(round(seconds * 1000))
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _write_srt(cues: list[list[dict]], path: str) -> None:
+    """Write cues out as SRT: an index, a time range, the text, then a blank line."""
+    blocks = []
+    for index, cue in enumerate(cues, start=1):
+        start = _srt_timestamp(cue[0]["start"])
+        end = _srt_timestamp(cue[-1]["end"])
+        text = " ".join(word["text"] for word in cue)
+        blocks.append(f"{index}\n{start} --> {end}\n{text}\n")
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(blocks))
+
+
+def _build_srt(ctx: TaskContext, workdir: str, start: float, end: float) -> str | None:
+    """Produce the caption file for this clip's window.
+
+    Returns the path, or None when there is nothing to burn in — no transcript, or no
+    speech inside the window. The caller then renders without the subtitles filter.
+    """
+    words = _load_words(ctx)
+    if not words:
+        return None
+
+    windowed = _words_in_window(words, start, end)
+    if not windowed:
+        return None
+
+    cues = _group_into_cues(windowed)
+    if not cues:
+        return None
+
+    path = os.path.join(workdir, SRT_FILENAME)
+    _write_srt(cues, path)
+    return path
+
+
+def _video_filter(fmt: str, crop: dict | None, srt_filename: str | None) -> str:
+    """Build the -vf chain: crop to aspect, scale to the preset, optionally burn captions.
+
+    The crop expressions pick the largest rect of the target aspect that still fits inside
+    the source (crop centres it by default), so a 16:9 podcast becomes 9:16 by taking the
+    middle column rather than letterboxing. An explicit `crop` from the editor wins.
+    """
+    if fmt not in FORMATS:
+        raise RuntimeError(f"Unsupported format {fmt!r}; expected one of {sorted(FORMATS)}")
+    width, height = FORMATS[fmt]
+
+    if crop:
+        crop_stage = f"crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']}"
+    else:
+        crop_stage = f"crop='min(iw,ih*{width}/{height})':'min(ih,iw*{height}/{width})'"
+
+    stages = [crop_stage, f"scale={width}:{height}"]
+
+    if srt_filename:
+        # Captions are burnt in after the scale so the font size means the same thing
+        # regardless of the source resolution.
+        stages.append(f"subtitles={srt_filename}:force_style='{CAPTION_STYLE}'")
+
+    return ",".join(stages)
+
+
+def _cut(workdir: str, src_path: str, out_path: str, start: float, duration: float, vf: str) -> None:
+    """Cut [start, start+duration] out of src_path and re-encode it to out_path.
+
+    `-ss` before `-i` seeks before decoding (fast — it does not walk the whole file), and
+    `-t` after `-i` measures the duration from that seek point.
+
+    ffmpeg runs with cwd=workdir so the subtitles filter can name the SRT by filename.
+    The filter parses ':' as its own option separator, so an absolute path would need
+    escaping — on Windows the drive letter alone ("C:\\...") breaks it.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", f"{start:.3f}",
+        "-i", src_path,
+        "-t", f"{duration:.3f}",
+        "-vf", vf,
+        "-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF,
+        "-pix_fmt", "yuv420p",        # some sources decode to a pix_fmt Safari/social won't play
+        "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart",    # moov atom up front so the clip streams before it fully downloads
+        out_path,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=workdir)
+    if proc.returncode != 0:
+        # Surface ffmpeg's own words — check=True would raise with them buried on .stderr,
+        # and the contract only persists str(e) into job.error.
+        raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {proc.stderr[-2000:]}")
+
+
+@job_contract("render", fail_video=False, on_failure=_mark_clip_failed)
+def render(ctx: TaskContext) -> None:
+    if _render_done(ctx):
+        return
+
+    clip = _load_clip(ctx)
+    clip.status = "rendering"
+
+    params = clip.params or {}
+    start = float(params["start"])
+    end = float(params["end"])
+    duration = end - start
+    if duration <= 0:
+        raise RuntimeError(f"Clip {clip.id} has a non-positive duration ({start} -> {end})")
+
+    fmt = params.get("format", DEFAULT_FORMAT)
+
+    started = time.monotonic()
+    workdir = tempfile.mkdtemp()
+    suffix = os.path.splitext(ctx.video.r2_key)[1] or ".mp4"
+    src_path = os.path.join(workdir, f"source{suffix}")   # INPUT  — the downloaded original
+    out_path = os.path.join(workdir, "clip.mp4")          # OUTPUT — ffmpeg writes here
+
+    try:
+        # Captions and the filter come first: both are cheap, and both can reject the
+        # job. Better to fail here than after pulling down a multi-gigabyte source.
+        srt_path = None
+        if params.get("captions"):
+            srt_path = _build_srt(ctx, workdir, start, end)
+
+        vf = _video_filter(fmt, params.get("crop"), SRT_FILENAME if srt_path else None)
+
+        download_file(ctx.video.r2_key, src_path)
+        _cut(workdir, src_path, out_path, start, duration, vf)
+
+        out_bytes = os.path.getsize(out_path)
+        out_key = f"clips/{clip.id}.mp4"
+        upload_file(out_path, out_key)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    clip.r2_key = out_key
+    clip.status = "ready"
+
+    ctx.metrics.update({
+        "clip_id": str(clip.id),
+        "format": fmt,
+        "captions": srt_path is not None,
+        "duration_sec": round(duration, 3),
+        "output_bytes": out_bytes,
+        "render_ms": int((time.monotonic() - started) * 1000),
+    })

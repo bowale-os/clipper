@@ -203,14 +203,13 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress, signal }) {
   })
 }
 
-export async function completeVideoUpload({ autoDetect = false, contentType, videoId, parts, token, getToken }) {
+export async function completeVideoUpload({ contentType, videoId, parts, token, getToken }) {
   const data = await requestJson('/videos/complete', {
     method: 'POST',
     token,
     getToken,
     body: {
       video_id: videoId,
-      auto_detect: autoDetect,
       content_type: contentType,
       parts: parts || undefined,
     },
@@ -261,20 +260,50 @@ export async function deleteVideo({ videoId, token }) {
   return data
 }
 
-export async function createClip({ videoId, startSec, endSec, token }) {
-  return requestJson('/clips/create', {
+export const CLIP_FORMATS = ['9:16', '1:1', '16:9']
+export const DEFAULT_CLIP_FORMAT = '9:16'
+
+// Rendering is queued on a worker, so this returns as soon as the job is
+// accepted. Poll getClip() for the finished URL.
+export async function createClip({
+  videoId,
+  startSec,
+  endSec,
+  format = DEFAULT_CLIP_FORMAT,
+  captions = false,
+  momentId,
+  token,
+}) {
+  const data = await requestJson('/clips/create', {
     method: 'POST',
     token,
     body: {
       video_id: videoId,
       start_sec: startSec,
       end_sec: endSec,
+      format,
+      captions,
+      moment_id: momentId || undefined,
     },
+  })
+
+  if (!data?.clip_id) {
+    throw new ApiError('The clip was queued, but the server did not return a clip id.', {
+      details: data,
+    })
+  }
+
+  return data
+}
+
+export async function getClip({ clipId, token }) {
+  return requestJson(`/clips/${encodeURIComponent(clipId)}`, {
+    method: 'GET',
+    token,
   })
 }
 
 export async function uploadVideoFile({
-  autoDetect = false,
   contentType = 'default',
   file,
   token,
@@ -329,5 +358,5 @@ export async function uploadVideoFile({
   }
 
   onStepChange?.('completing')
-  return completeVideoUpload({ autoDetect, contentType, videoId, parts, getToken: tokenProvider })
+  return completeVideoUpload({ contentType, videoId, parts, getToken: tokenProvider })
 }

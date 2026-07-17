@@ -8,7 +8,6 @@ const initialUploadState = {
   progress: 0,
   result: null,
   status: 'idle',
-  autoDetect: false,
   contentType: 'default',
   resumeTarget: null,
 }
@@ -52,7 +51,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     setUploadState((current) => {
       const kept = {
         resumeTarget: current.resumeTarget,
-        autoDetect: current.autoDetect,
         contentType: current.contentType,
       }
 
@@ -95,13 +93,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     })
   }
 
-  function setAutoDetect(autoDetect) {
-    setUploadState((current) => ({
-      ...current,
-      autoDetect,
-    }))
-  }
-
   function setContentType(contentType) {
     setUploadState((current) => ({
       ...current,
@@ -127,7 +118,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
       }))
 
       const result = await uploadVideoFile({
-        autoDetect: uploadState.autoDetect,
         contentType: uploadState.contentType,
         file: uploadState.file,
         getToken: getFreshToken,
@@ -189,7 +179,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     setUploadState((current) => ({
       ...initialUploadState,
       resumeTarget: current.resumeTarget,
-      autoDetect: current.autoDetect,
       contentType: current.contentType,
     }))
 
@@ -208,7 +197,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     setUploadState((current) => ({
       ...initialUploadState,
       resumeTarget: current.resumeTarget,
-      autoDetect: current.autoDetect,
       contentType: current.contentType,
     }))
   }
@@ -219,7 +207,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     cancelUpload,
     resetUpload,
     selectFile,
-    setAutoDetect,
     setContentType,
     startResume,
     uploadSelectedFile,

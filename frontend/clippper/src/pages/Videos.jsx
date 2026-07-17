@@ -1,148 +1,35 @@
-import DashboardLayout from '../components/DashboardLayout'
+import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import AppLayout from '../components/AppLayout'
+import VideoCard from '../components/VideoCard'
+import EmptyState from '../components/EmptyState'
+import { FilmIcon } from '../components/icons'
 import { useUserVideos } from '../hooks/useUserVideos'
-import { Link, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
-import { ApiError, deleteVideo } from '../services/api'
 import { useAuthedApi } from '../hooks/useAuthedApi'
+import { deleteVideo } from '../services/api'
+import { countByStatus, flattenVideos } from '../lib/videos'
+import { getVideoId } from '../lib/format'
+import { getReadableError } from '../lib/errors'
 
-function asArray(value) {
-  return Array.isArray(value) ? value : []
-}
+const filters = [
+  { label: 'All', value: 'all' },
+  { label: 'Ready', value: 'ready' },
+  { label: 'Analyzing', value: 'processing' },
+  { label: 'Uploading', value: 'uploading' },
+  { label: 'Failed', value: 'error' },
+]
 
-function formatBytes(bytes) {
-  if (!bytes) {
-    return 'Unknown size'
+// "Analyzing" covers both states between a finished upload and ready moments.
+function matchesFilter(video, filter) {
+  if (filter === 'all') {
+    return true
   }
 
-  const units = ['B', 'KB', 'MB', 'GB']
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const value = bytes / 1024 ** exponent
-
-  return `${value.toFixed(value >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`
-}
-
-function formatDate(value) {
-  if (!value) {
-    return 'No date'
+  if (filter === 'processing') {
+    return video.status === 'processing' || video.status === 'uploaded'
   }
 
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value)
-  }
-
-  return date.toLocaleString()
-}
-
-function getVideoId(video) {
-  return video?._id || video?.id || video?.video_id || 'Unknown ID'
-}
-
-function getReadableError(error) {
-  if (error instanceof ApiError) {
-    return error.status ? `${error.message} (${error.status})` : error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return 'Video could not be deleted.'
-}
-
-function VideoTable({ deletingVideoId, emptyLabel, onDeleteVideo, onResumeVideo, title, videos }) {
-  return (
-    <section className="dashboard-panel videos-panel">
-      <div className="panel-heading">
-        <div>
-          <p className="panel-label">{videos.length} videos</p>
-          <h2>{title}</h2>
-        </div>
-      </div>
-
-      {videos.length ? (
-        <div className="videos-table" role="table" aria-label={title}>
-          <div className="videos-table-row videos-table-head" role="row">
-            <span role="columnheader">File</span>
-            <span role="columnheader">Status</span>
-            <span role="columnheader">Size</span>
-            <span role="columnheader">Created</span>
-            <span role="columnheader">Video ID</span>
-            <span role="columnheader">Actions</span>
-          </div>
-          {videos.map((video) => (
-            <div className="videos-table-row" role="row" key={getVideoId(video)}>
-              <span role="cell">
-                <strong>{video.filename || 'Untitled video'}</strong>
-              </span>
-              <span role="cell">
-                <mark>{video.status || 'unknown'}</mark>
-              </span>
-              <span role="cell">{formatBytes(video.size_bytes ?? video.size)}</span>
-              <span role="cell">{formatDate(video.created_at)}</span>
-              <span className="video-id" role="cell">
-                {getVideoId(video)}
-              </span>
-              <span className="video-actions" role="cell">
-                {video.status === 'uploading' && onResumeVideo ? (
-                  <button
-                    className="button button-primary"
-                    type="button"
-                    onClick={() => onResumeVideo(video)}
-                  >
-                    Resume upload
-                  </button>
-                ) : null}
-                {video.status === 'ready' ? (
-                  <Link
-                    className="button button-primary"
-                    to={`/videos/${encodeURIComponent(getVideoId(video))}/moments`}
-                  >
-                    Show moments
-                  </Link>
-                ) : null}
-                {['uploaded', 'ready'].includes(video.status) ? (
-                  <Link
-                    className="button button-secondary"
-                    to={`/videos/${encodeURIComponent(getVideoId(video))}/clips`}
-                  >
-                    Cut clip
-                  </Link>
-                ) : null}
-                <button
-                  className="button button-danger"
-                  type="button"
-                  onClick={() => onDeleteVideo(video)}
-                  disabled={deletingVideoId === getVideoId(video)}
-                >
-                  {deletingVideoId === getVideoId(video) ? 'Deleting...' : 'Delete'}
-                </button>
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="videos-empty">
-          <strong>{emptyLabel}</strong>
-          <span>Upload a video from the dashboard and it will show up here.</span>
-        </div>
-      )}
-    </section>
-  )
-}
-
-function VideoCountSummary({ counts }) {
-  return (
-    <section className="video-count-summary" aria-label="Video category counts">
-      {counts.map((count) => (
-        <article key={count.label}>
-          <span>{count.value}</span>
-          <p>{count.label}</p>
-        </article>
-      ))}
-    </section>
-  )
+  return video.status === filter
 }
 
 function Videos() {
@@ -151,11 +38,26 @@ function Videos() {
   const navigate = useNavigate()
   const [deleteError, setDeleteError] = useState('')
   const [deletingVideoId, setDeletingVideoId] = useState('')
-  const uploadedVideos = asArray(data?.uploaded_videos)
-  const uploadingVideos = asArray(data?.uploading_videos)
-  const processingVideos = asArray(data?.processing_videos)
-  const readyVideos = asArray(data?.ready_videos)
-  const errorVideos = asArray(data?.error_videos)
+  const [filter, setFilter] = useState('all')
+
+  const videos = useMemo(() => flattenVideos(data), [data])
+  const counts = useMemo(() => countByStatus(videos), [videos])
+  const visibleVideos = useMemo(
+    () => videos.filter((video) => matchesFilter(video, filter)),
+    [videos, filter],
+  )
+
+  function countFor(value) {
+    if (value === 'all') {
+      return videos.length
+    }
+
+    if (value === 'processing') {
+      return (counts.processing || 0) + (counts.uploaded || 0)
+    }
+
+    return counts[value] || 0
+  }
 
   function handleResumeVideo(video) {
     navigate('/dashboard', {
@@ -172,12 +74,15 @@ function Videos() {
   async function handleDeleteVideo(video) {
     const videoId = getVideoId(video)
 
-    if (!videoId || videoId === 'Unknown ID') {
+    if (!videoId) {
       setDeleteError('Video ID is missing.')
       return
     }
 
-    const shouldDelete = window.confirm(`Delete "${video.filename || videoId}"? This also deletes its stored video file.`)
+    const shouldDelete = window.confirm(
+      `Delete "${video.filename || videoId}"? This also deletes its stored video file.`,
+    )
+
     if (!shouldDelete) {
       return
     }
@@ -188,90 +93,72 @@ function Videos() {
       await runWithToken((token) => deleteVideo({ token, videoId }))
       await refresh({ markLoading: false })
     } catch (deleteFailure) {
-      setDeleteError(getReadableError(deleteFailure))
+      setDeleteError(getReadableError(deleteFailure, 'Video could not be deleted.'))
     } finally {
       setDeletingVideoId('')
     }
   }
 
   return (
-    <DashboardLayout eyebrow="Library" title="Your videos">
-      <section className="videos-page">
-        <div className="videos-toolbar">
-          <div>
-            <p className="panel-label">Library</p>
-            <h2>Everything you've uploaded</h2>
-          </div>
-          <button className="button button-secondary" type="button" onClick={refresh} disabled={isLoading}>
-            {isLoading ? 'Refreshing...' : 'Refresh'}
-          </button>
+    <AppLayout
+      eyebrow="Library"
+      title="Everything you've uploaded"
+      actions={
+        <button className="button button-secondary" type="button" onClick={refresh} disabled={isLoading}>
+          {isLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
+      }
+    >
+      <div className="library-toolbar">
+        <div className="chip-row">
+          {filters.map((option) => (
+            <button
+              aria-pressed={filter === option.value}
+              className="chip"
+              key={option.value}
+              onClick={() => setFilter(option.value)}
+              type="button"
+            >
+              {option.label}
+              <span className="chip-count">{countFor(option.value)}</span>
+            </button>
+          ))}
         </div>
+      </div>
 
-        {error ? (
-          <div className="upload-message error">
-            {error}
-          </div>
-        ) : null}
+      {error ? <p className="message error">{error}</p> : null}
+      {deleteError ? <p className="message error">{deleteError}</p> : null}
 
-        {deleteError ? (
-          <div className="upload-message error">
-            {deleteError}
-          </div>
-        ) : null}
-
-        {isLoading ? (
-          <div className="dashboard-panel videos-loading">Loading videos...</div>
-        ) : (
-          <>
-            <VideoCountSummary
-              counts={[
-                { label: 'Ready', value: readyVideos.length },
-                { label: 'Processing', value: processingVideos.length },
-                { label: 'Errors', value: errorVideos.length },
-                { label: 'Uploading', value: uploadingVideos.length },
-                { label: 'Uploaded', value: uploadedVideos.length },
-              ]}
+      {isLoading ? (
+        <div className="card-grid">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div className="skeleton skeleton-card" key={index} />
+          ))}
+        </div>
+      ) : visibleVideos.length ? (
+        <div className="card-grid">
+          {visibleVideos.map((video) => (
+            <VideoCard
+              isDeleting={deletingVideoId === getVideoId(video)}
+              key={getVideoId(video)}
+              onDelete={handleDeleteVideo}
+              onResume={handleResumeVideo}
+              video={video}
             />
-            <VideoTable
-              deletingVideoId={deletingVideoId}
-              emptyLabel="No ready videos yet."
-              onDeleteVideo={handleDeleteVideo}
-              title="Ready videos"
-              videos={readyVideos}
-            />
-            <VideoTable
-              deletingVideoId={deletingVideoId}
-              emptyLabel="No videos currently processing."
-              onDeleteVideo={handleDeleteVideo}
-              title="Processing videos"
-              videos={processingVideos}
-            />
-            <VideoTable
-              deletingVideoId={deletingVideoId}
-              emptyLabel="No videos with errors."
-              onDeleteVideo={handleDeleteVideo}
-              title="Error videos"
-              videos={errorVideos}
-            />
-            <VideoTable
-              deletingVideoId={deletingVideoId}
-              emptyLabel="No videos currently uploading."
-              onDeleteVideo={handleDeleteVideo}
-              onResumeVideo={handleResumeVideo}
-              title="Uploading videos"
-              videos={uploadingVideos}
-            />
-            <VideoTable
-              deletingVideoId={deletingVideoId}
-              emptyLabel="No completed uploads yet."
-              onDeleteVideo={handleDeleteVideo}
-              title="Uploaded videos"
-              videos={uploadedVideos}
-            />
-          </>
-        )}
-      </section>
-    </DashboardLayout>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          description={
+            videos.length
+              ? 'Nothing in this filter yet. Try another one.'
+              : "Upload a stream from the dashboard and it'll show up here while we analyze it."
+          }
+          glyph={<FilmIcon size={22} />}
+          title={videos.length ? 'Nothing here' : 'Your library is empty'}
+        />
+      )}
+    </AppLayout>
   )
 }
 

@@ -1,0 +1,114 @@
+/* ============================================================
+   Clippper design tokens — see docs/DESIGN.md
+
+   Every component styles against SEMANTIC tokens only
+   (--surface-1, --text-body, --accent...). The two themes below
+   are the only place raw hex values are allowed.
+
+   House rules baked into these tokens:
+   no gradients, no glows, no blur, no shadow stacks.
+   Depth = flat surface + 1px hairline + radius contrast.
+   ============================================================ */
+
+:root {
+  /* ---- Type ---- */
+  --font-sans:
+    'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', SFMono-Regular, Consolas, monospace;
+
+  --text-display: 3.5rem;
+  --text-h1: 2.25rem;
+  --text-h2: 1.5rem;
+  --text-h3: 1.125rem;
+  --text-body: 1rem;
+  --text-sm: 0.875rem;
+  --text-xs: 0.75rem;
+
+  /* ---- Space (4px base) ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+
+  /* ---- Shape ---- */
+  --radius-frame: 40px;
+  --radius-card: 24px;
+  --radius-row: 16px;
+  --radius-input: 12px;
+  --radius-control: 8px;
+  --radius-pill: 200px;
+
+  /* ---- Layout ---- */
+  --sidebar-width: 248px;
+  --content-max: 1160px;
+  --hairline: 1px;
+}
+
+/* ============ Dark theme (default) ============ */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --canvas: #0d0c12;
+  --surface-1: #17151f;
+  --surface-2: #211e2c;
+  --surface-hover: #262232;
+
+  --border: #2b2837;
+  --border-strong: #3d3950;
+
+  --text-heading: #f6f5fa;
+  --text-body-color: #d5d2df;
+  --text-muted: #8b8799;
+
+  --accent: #7c5cff;
+  --accent-hover: #8f74ff;
+  --accent-quiet: #241d47;
+  --on-accent: #ffffff;
+
+  --state-motion: #2ed6ff;
+  --state-good: #a2ea13;
+  --state-bad: #ff5f70;
+  --state-feature: #f843c2;
+
+  --skeleton: #201d2b;
+}
+
+/* ============ Light theme ============ */
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --canvas: #ffffff;
+  --surface-1: #ffffff;
+  --surface-2: #f4f4f2;
+  --surface-hover: #eeeeee;
+
+  --border: #e0e0db;
+  --border-strong: #c9c9c2;
+
+  --text-heading: #21164c;
+  --text-body-color: #353241;
+  --text-muted: #5f5f69;
+
+  --accent: #592eff;
+  --accent-hover: #4a22e0;
+  --accent-quiet: #f0ecff;
+  --on-accent: #ffffff;
+
+  --state-motion: #0090b8;
+  --state-good: #4b7a00;
+  --state-bad: #d2384a;
+  --state-feature: #b81a8a;
+
+  --skeleton: #eeeeee;
+}
