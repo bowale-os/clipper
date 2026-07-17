@@ -23,6 +23,7 @@ MAX_LEN=90
 SENT_GAP=0.6
 START_PAD=0.25
 SILENCE_EXTEND=2.0
+SNAP_WINDOW=3.0     # max seconds a boundary search may travel from the cited timestamp
 LOUD_DB_OVER_MEDIAN = 8.0   
 LOUD_MIN_DUR = 1.0
 
@@ -162,6 +163,55 @@ def _build_annotated(segments, features) -> str:
     return "\n".join(line for _, _, line in events)
 
 
+def _sentence_boundaries(words):
+    """Timestamps where a real pause (>= SENT_GAP) precedes the next word - i.e. clean
+    places to open or close a clip. First word's start always counts."""
+    if not words:
+        return []
+    boundaries = [words[0]["start"]]
+    for prev, cur in zip(words, words[1:]):
+        if cur["start"] - prev["end"] >= SENT_GAP:
+            boundaries.append(cur["start"])
+    return boundaries
+
+
+def _snap_moment(raw_start, raw_end, boundaries, silences):
+    """Corrects the LLM's cited start/end against real word timing and silence data.
+
+    Start snaps backward to the nearest clean boundary within SNAP_WINDOW - it can only
+    add lead-in context, never lose the hook the model picked. End snaps forward, so a
+    cut can only finish the sentence, never truncate it, then rides into a trailing
+    silence (up to SILENCE_EXTEND) so a laugh/reaction lands before the clip ends. Falls
+    back progressively - dropping the lead-in pad, then the silence ride, then the raw
+    citation - whenever the result would blow past MAX_LEN.
+    """
+    start_candidates = [b for b in boundaries if raw_start - SNAP_WINDOW <= b <= raw_start]
+    end_candidates = [b for b in boundaries if raw_end <= b <= raw_end + SNAP_WINDOW]
+
+    start = max(start_candidates) if start_candidates else raw_start
+    end = min(end_candidates) if end_candidates else raw_end
+    padded_start = max(0.0, start - START_PAD)
+
+    extended_end = end
+    for sil in silences:
+        sil_start = float(sil["silence_start"])
+        if abs(sil_start - end) <= 0.5:
+            extended_end = min(end + SILENCE_EXTEND, float(sil["silence_end"]))
+            break
+
+    for candidate_start, candidate_end in (
+        (padded_start, extended_end),
+        (padded_start, end),
+        (start, extended_end),
+        (start, end),
+    ):
+        dur = candidate_end - candidate_start
+        if MIN_LEN <= dur <= MAX_LEN:
+            return candidate_start, candidate_end
+
+    return raw_start, raw_end   # nothing snapped stayed in bounds; keep the citation
+
+
 @job_contract("detect")
 def detect(ctx: TaskContext) -> None:
     if _detect_done(ctx):
@@ -169,6 +219,8 @@ def detect(ctx: TaskContext) -> None:
     
     transcript, words, features = _load_inputs(ctx)
     segments = transcript.segments
+    boundaries = _sentence_boundaries(words)
+    silences = features.get("silences", [])
 
     prompt_inject = _build_annotated(segments=segments, features=features)
     run = RankingRun(
@@ -224,11 +276,12 @@ def detect(ctx: TaskContext) -> None:
             dur = raw_end - raw_start
             if dur < MIN_LEN or dur > MAX_LEN:
                 continue
+            start_sec, end_sec = _snap_moment(raw_start, raw_end, boundaries, silences)
             final = 0.4 * m.hook + 0.3 * m.shareability + 0.2 * m.completeness + 0.1 * m.visual
             ctx.db.add(Moment(
                 video_id=ctx.video.id,
                 run_id=run.id,
-                start_sec=raw_start, end_sec=raw_end,      # snapping is a later concern
+                start_sec=start_sec, end_sec=end_sec,
                 raw_start_sec=raw_start, raw_end_sec=raw_end,
                 scores={"hook": m.hook, "completeness": m.completeness,
                         "shareability": m.shareability, "visual": m.visual,

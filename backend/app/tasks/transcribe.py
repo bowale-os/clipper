@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import shutil
@@ -12,6 +13,8 @@ from app.config.secrets import settings
 from app.db.models import Transcript, VideoStatus
 from app.workers.contract import TaskContext, job_contract
 from app.workers.queues import io_queue
+
+logger = logging.getLogger(__name__)
 
 GROQ_MODEL = "whisper-large-v3"
 GROQ_MAX_BYTES = 24 * 1024 * 1024   # Groq rejects uploads over 25MB; stay under.
@@ -110,6 +113,8 @@ def transcribe(ctx: TaskContext) -> None:
     workdir = tempfile.mkdtemp()
     audio_path = os.path.join(workdir, "audio.ogg")
 
+    logger.info("transcribe %s: start", video.id)
+
     try:
         # Reuse ingest's 16 kHz mono Opus — no need to re-download or re-decode the source.
         download_file(video.artifacts["audio_key"], audio_path)
@@ -123,6 +128,7 @@ def transcribe(ctx: TaskContext) -> None:
         language: str | None = None
 
         if audio_bytes <= GROQ_MAX_BYTES:
+            logger.info("transcribe %s: single-shot request (%d bytes)", video.id, audio_bytes)
             segments, words, language = _transcribe_file(client, audio_path, 0.0)
         else:
             # duration_sec is set upstream by ingest; size the stride so each chunk
@@ -130,15 +136,19 @@ def transcribe(ctx: TaskContext) -> None:
             duration = float(video.duration_sec)
             max_req_sec = GROQ_MAX_BYTES / (audio_bytes / duration)
             stride = max(1.0, max_req_sec - OVERLAP_SEC)
-            for part_path, offset, win_start, win_end in _split_audio(audio_path, duration, stride, workdir):
+            chunks = _split_audio(audio_path, duration, stride, workdir)
+            logger.info("transcribe %s: %d bytes over budget, splitting into %d chunks", video.id, audio_bytes, len(chunks))
+            for i, (part_path, offset, win_start, win_end) in enumerate(chunks):
                 seg, wrd, lang = _transcribe_file(client, part_path, offset)
                 # Keep only what falls in this chunk's authoritative window — the
                 # windows tile the timeline exactly once, so nothing is missed or doubled.
                 segments += [s for s in seg if win_start <= s["start"] < win_end]
                 words += [w for w in wrd if win_start <= w["start"] < win_end]
                 language = language or lang
+                logger.info("transcribe %s: chunk %d/%d done", video.id, i + 1, len(chunks))
 
         video.pipeline = {**video.pipeline, "progress_pct": 85}
+        logger.info("transcribe %s: groq done (segments=%d, words=%d)", video.id, len(segments), len(words))
 
         # Segments (small) live inline in the DB; word-level timing (large) goes to R2.
         words_key = f"artifacts/{video.id}/words.json"
@@ -166,6 +176,8 @@ def transcribe(ctx: TaskContext) -> None:
         "transcribe_ms": int((time.monotonic() - started) * 1000),
         "est_cost_usd": round(duration_sec / 3600 * GROQ_COST_PER_HOUR, 6),
     })
+
+    logger.info("transcribe %s: done in %dms, enqueuing detect", video.id, ctx.metrics["transcribe_ms"])
 
     # Enqueue next stage. String path avoids importing detect before it exists.
     io_queue.enqueue("app.tasks.detect.detect", str(video.id))

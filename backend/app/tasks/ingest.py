@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import re
@@ -10,6 +11,8 @@ import time
 from app.db.models import VideoStatus
 from app.workers.contract import TaskContext, job_contract
 from app.workers.queues import io_queue
+
+logger = logging.getLogger(__name__)
 
 # Energy timeline resolution: one RMS reading per this many samples at 16 kHz.
 RMS_WINDOW_SAMPLES = 8000          # 0.5 s at 16 kHz
@@ -158,30 +161,37 @@ def ingest(ctx: TaskContext) -> None:
     keyframes_key = f"{prefix}/keyframes.json"
     thumbs_key = f"{prefix}/thumbs.jpg"
 
+    logger.info("ingest %s: start", video.id)
+
     try:
         download_file(video.r2_key, video_path)
         probed_size = os.path.getsize(video_path)
         duration = _ffprobe_duration(video_path)
         video.pipeline = {**video.pipeline, "progress_pct": 20}
+        logger.info("ingest %s: downloaded source (%d bytes, %.1fs)", video.id, probed_size, duration)
 
         # audio.ogg — the only full read of the source; everything else is cheap.
         _extract_audio(video_path, audio_path)
         upload_file(audio_path, audio_key)
         video.pipeline = {**video.pipeline, "progress_pct": 50}
+        logger.info("ingest %s: audio extracted + uploaded", video.id)
 
         # features.json — energy + silence timeline (drives detect's markers & snapping).
         features = {"rms": _rms_timeline(audio_path), "silences": _detect_silences(audio_path)}
         upload_bytes(json.dumps(features).encode("utf-8"), features_key, "application/json")
         video.pipeline = {**video.pipeline, "progress_pct": 70}
+        logger.info("ingest %s: features computed (silences=%d)", video.id, len(features["silences"]))
 
         # keyframes.json — seek math for later render/preview.
         keyframes = _keyframes(video_path)
         upload_bytes(json.dumps(keyframes).encode("utf-8"), keyframes_key, "application/json")
         video.pipeline = {**video.pipeline, "progress_pct": 85}
+        logger.info("ingest %s: keyframes computed (%d)", video.id, len(keyframes))
 
         # thumbs.jpg — scrubber sprite for the review UI.
         _thumb_sprite(video_path, thumbs_path, duration)
         upload_file(thumbs_path, thumbs_key)
+        logger.info("ingest %s: thumbnail sprite generated", video.id)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -203,6 +213,8 @@ def ingest(ctx: TaskContext) -> None:
         "ingest_ms": int((time.monotonic() - started) * 1000),
         "est_cost_usd": 0.0,   # own CPU only; recorded so cost sums are uniform per stage
     })
+
+    logger.info("ingest %s: done in %dms, enqueuing transcribe", video.id, ctx.metrics["ingest_ms"])
 
     # Enqueue next stage. String path avoids importing transcribe before it exists.
     io_queue.enqueue("app.tasks.transcribe.transcribe", str(video.id))
