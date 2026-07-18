@@ -17,12 +17,18 @@ GEMINI_MODEL = "gemini-2.5-flash"
 # before trusting est_cost_usd — these drift and feed billing rollups.
 GEMINI_IN_PER_MTOK = 0.30
 GEMINI_OUT_PER_MTOK = 2.50
-PROMPT_VERSION = "detect-v1"
+PROMPT_VERSION = "detect-v2"
 MAX_MOMENTS=15
-MIN_LEN=40
-MAX_LEN=60
+MIN_LEN=60
+MAX_LEN=80
 SENT_GAP=0.6
-START_PAD=0.25
+# Breathing room added on both sides of the substance the model picked. Clips that open
+# exactly on the first word and cut on the last one read as chopped, and the payoff never
+# lands. CORE_* is the window the model is asked for; MIN_LEN/MAX_LEN bound the result
+# once the cushion is on.
+CUSHION=5.0
+CORE_MIN=MIN_LEN - 2 * CUSHION
+CORE_MAX=MAX_LEN - 2 * CUSHION
 SILENCE_EXTEND=2.0
 SNAP_WINDOW=3.0     # max seconds a boundary search may travel from the cited timestamp
 LOUD_DB_OVER_MEDIAN = 8.0
@@ -44,8 +50,16 @@ Return AT MOST {MAX_MOMENTS} moments, each a self-contained clip that would work
 
 Rules:
 - start/end MUST be timestamps that appear in the script (use the [h:mm:ss] markers).
-- Each clip must run between {MIN_LEN} and {MAX_LEN} seconds. Do not exceed {MAX_LEN}.
-- Begin on a clean thought, not mid-sentence; end on a punchline, payoff, or resolved point.
+- Mark only the substance of the moment: between {CORE_MIN:.0f} and {CORE_MAX:.0f} seconds. \
+Do not exceed {CORE_MAX:.0f}. About {CUSHION:.0f} seconds of lead-in and follow-through get \
+added to each side afterwards, so you do not need to pad the timestamps yourself.
+- Begin on a clean thought, not mid-sentence.
+- End AFTER the payoff has fully landed, not on the last word of it. The punchline, the \
+reaction to it, and the beat that follows all belong inside the clip. A moment that stops \
+the instant the point is made feels cut off, so carry the end through to the next natural \
+stopping place. Never end mid-sentence or mid-list.
+- Skip moments whose payoff is still unfinished when the interesting part runs out of room. \
+A complete smaller moment beats a truncated big one.
 - Prefer moments with a strong hook in the first few seconds; energy markers are signal, not filler.
 - Score each 0..1: hook (grabs attention fast), completeness (stands alone), \
 shareability (worth reposting), visual (implied on-screen interest).
@@ -182,39 +196,43 @@ def _sentence_boundaries(words):
     return boundaries
 
 
-def _snap_moment(raw_start, raw_end, boundaries, silences):
-    """Corrects the LLM's cited start/end against real word timing and silence data.
+def _snap_moment(raw_start, raw_end, boundaries, silences, video_end=None):
+    """Corrects the LLM's cited start/end against real word timing and silence data, then
+    opens the clip up so it does not read as chopped.
 
     Start snaps backward to the nearest clean boundary within SNAP_WINDOW - it can only
     add lead-in context, never lose the hook the model picked. End snaps forward, so a
     cut can only finish the sentence, never truncate it, then rides into a trailing
-    silence (up to SILENCE_EXTEND) so a laugh/reaction lands before the clip ends. Falls
-    back progressively - dropping the lead-in pad, then the silence ride, then the raw
-    citation - whenever the result would blow past MAX_LEN.
+    silence (up to SILENCE_EXTEND) so a laugh/reaction lands before the clip ends.
+
+    On top of that both sides get CUSHION seconds of air, which is what actually keeps the
+    payoff from landing on the final frame. The cushion shrinks (never below zero) rather
+    than pushing the clip past MAX_LEN, and is clipped to the source's own bounds.
     """
     start_candidates = [b for b in boundaries if raw_start - SNAP_WINDOW <= b <= raw_start]
     end_candidates = [b for b in boundaries if raw_end <= b <= raw_end + SNAP_WINDOW]
 
     start = max(start_candidates) if start_candidates else raw_start
     end = min(end_candidates) if end_candidates else raw_end
-    padded_start = max(0.0, start - START_PAD)
 
-    extended_end = end
     for sil in silences:
         sil_start = float(sil["silence_start"])
         if abs(sil_start - end) <= 0.5:
-            extended_end = min(end + SILENCE_EXTEND, float(sil["silence_end"]))
+            end = min(end + SILENCE_EXTEND, float(sil["silence_end"]))
             break
 
-    for candidate_start, candidate_end in (
-        (padded_start, extended_end),
-        (padded_start, end),
-        (start, extended_end),
-        (start, end),
-    ):
-        dur = candidate_end - candidate_start
-        if MIN_LEN <= dur <= MAX_LEN:
-            return candidate_start, candidate_end
+    # Split whatever room MAX_LEN leaves evenly between the two sides, so a long moment
+    # gives up head and tail air together instead of losing all of it off the end.
+    room = max(0.0, MAX_LEN - (end - start))
+    cushion = min(CUSHION, room / 2)
+
+    padded_start = max(0.0, start - cushion)
+    padded_end = end + cushion
+    if video_end is not None:
+        padded_end = min(padded_end, float(video_end))
+
+    if padded_end - padded_start >= MIN_LEN:
+        return padded_start, padded_end
 
     return raw_start, raw_end   # nothing snapped stayed in bounds; keep the citation
 
@@ -280,6 +298,7 @@ def detect(ctx: TaskContext) -> None:
     run = RankingRun(
         video_id=ctx.video.id,
         params={"max_moments": MAX_MOMENTS, "min_len": MIN_LEN, "max_len": MAX_LEN,
+                "core_min": CORE_MIN, "core_max": CORE_MAX, "cushion": CUSHION,
                 "sent_gap": SENT_GAP, "loud_db_over_median": LOUD_DB_OVER_MEDIAN},
         prompt_version=PROMPT_VERSION,
         model=GEMINI_MODEL,
@@ -328,9 +347,11 @@ def detect(ctx: TaskContext) -> None:
         for m in candidates:
             raw_start, raw_end = _parse_ts(m.start), _parse_ts(m.end)
             dur = raw_end - raw_start
-            if dur < MIN_LEN or dur > MAX_LEN:
+            if dur < CORE_MIN or dur > CORE_MAX:
                 continue
-            start_sec, end_sec = _snap_moment(raw_start, raw_end, boundaries, silences)
+            start_sec, end_sec = _snap_moment(
+                raw_start, raw_end, boundaries, silences, ctx.video.duration_sec
+            )
             final = 0.4 * m.hook + 0.3 * m.shareability + 0.2 * m.completeness + 0.1 * m.visual
             moment = Moment(
                 video_id=ctx.video.id,
