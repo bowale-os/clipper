@@ -17,15 +17,20 @@ class TaskContext:
     job: Job
     params: dict
     metrics: dict = field(default_factory=dict)
-    next_stage: Optional[tuple] = None
+    next_stages: list = field(default_factory=list)
 
-    def enqueue_next(self, task_path: str, *args) -> None:
-        """Record the next pipeline stage to enqueue once this job's transaction
-        commits. Must not call Queue.enqueue directly from a task — a stage's
-        durable state (e.g. ingest's audio_key) isn't real until this job's own
-        commit succeeds, and the next stage would read a video row that doesn't
-        have it yet if enqueued any earlier."""
-        self.next_stage = (task_path, args)
+    def enqueue_next(self, task_path: str, *args, queue: str = "io") -> None:
+        """Record a follow-on job to enqueue once this job's transaction commits.
+
+        Must not call Queue.enqueue directly from a task — a stage's durable state
+        (e.g. ingest's audio_key) isn't real until this job's own commit succeeds, and
+        the next stage would read a video row that doesn't have it yet if enqueued any
+        earlier.
+
+        Call more than once to fan out: detect queues one render per moment. `queue`
+        picks the worker pool, since renders are CPU work and the pipeline stages are IO.
+        """
+        self.next_stages.append((task_path, args, queue))
 
 SkipIf = Callable[["TaskContext"], bool]
 
@@ -90,6 +95,7 @@ def job_contract(
     skip_if: Optional[SkipIf] = None,
     fail_video: bool = True,
     on_failure: Optional[FailureHook] = None,
+    lock_video: bool = True,
 ):
     """Wrap a task with session, Job bookkeeping, and durable failure recording.
 
@@ -99,15 +105,22 @@ def job_contract(
                  about the video or the other clips.
     on_failure:  optional callback run inside the failure transaction, for a task to
                  record its own error state (see render's clip tombstone).
+    lock_video:  whether to SELECT ... FOR UPDATE the video row. True for the pipeline
+                 stages: they merge keys into video.pipeline/artifacts, and a JSON column
+                 rewrites the whole document, so two concurrent stages would lose one
+                 another's writes. False for tasks that only read the video and write
+                 their own rows — the lock is held until this job commits, so a render
+                 would otherwise hold it across its download, encode and upload, and
+                 renders of the same video could never run in parallel.
     """
     def decorator(main_fn):
         @functools.wraps(main_fn)
         def wrapper(video_id, params=None):
-            next_stage = None
+            next_stages = []
             with session_scope() as session:
                 current_job = get_current_job()
                 cjob_id = current_job.id if current_job else None
-                video = session.get(Video, video_id, with_for_update=True)
+                video = session.get(Video, video_id, with_for_update=lock_video)
                 if not video:
                     raise RuntimeError(f"Video {video_id} not found")
 
@@ -137,7 +150,7 @@ def job_contract(
                     job.status = "done"
                     job.finished_at = datetime.now(timezone.utc)
                     job.metrics = ctx.metrics
-                    next_stage = ctx.next_stage
+                    next_stages = ctx.next_stages
                 except Exception as e:
                     # Discard the poisoned session, then record the failure in its own
                     # transaction — writing it here would just roll back with everything else.
@@ -150,10 +163,11 @@ def job_contract(
             # Only reachable once `with session_scope()` has exited *without* raising,
             # i.e. session.commit() actually succeeded — so the next stage never starts
             # before this job's own durable state (audio_key, transcript, ...) is real.
-            if next_stage is not None:
-                from app.workers.queues import io_queue
-                task_path, args = next_stage
-                io_queue.enqueue(task_path, *args)
+            if next_stages:
+                from app.workers.queues import cpu_queue, io_queue
+                pools = {"io": io_queue, "cpu": cpu_queue}
+                for task_path, args, queue_name in next_stages:
+                    pools[queue_name].enqueue(task_path, *args)
         return wrapper
     return decorator
 

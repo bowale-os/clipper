@@ -6,6 +6,7 @@ import tempfile
 import time
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import Clip
@@ -259,7 +260,9 @@ def _cut(workdir: str, src_path: str, out_path: str, start: float, duration: flo
         raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {proc.stderr[-2000:]}")
 
 
-@job_contract("render", fail_video=False, on_failure=_mark_clip_failed)
+# lock_video=False: render only reads the video (r2_key, words_key) and writes its own
+# Clip row, so it has no reason to hold an exclusive lock across the whole encode.
+@job_contract("render", fail_video=False, lock_video=False, on_failure=_mark_clip_failed)
 def render(ctx: TaskContext) -> None:
     if _render_done(ctx):
         return

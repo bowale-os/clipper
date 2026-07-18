@@ -6,7 +6,8 @@ from google import genai
 from google.genai import types
 
 from app.config.secrets import settings
-from app.db.models import RankingRun, Transcript, Moment, VideoStatus
+from app.db.models import Clip, RankingRun, Transcript, Moment, VideoStatus
+from app.tasks.render import DEFAULT_FORMAT
 from app.workers.contract import TaskContext, job_contract
 from app.workers.queues import io_queue
 from app.services.r2_client import download_bytes
@@ -17,15 +18,21 @@ GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_IN_PER_MTOK = 0.30
 GEMINI_OUT_PER_MTOK = 2.50
 PROMPT_VERSION = "detect-v1"
-MAX_MOMENTS=10
-MIN_LEN=15
-MAX_LEN=90
+MAX_MOMENTS=15
+MIN_LEN=40
+MAX_LEN=60
 SENT_GAP=0.6
 START_PAD=0.25
 SILENCE_EXTEND=2.0
 SNAP_WINDOW=3.0     # max seconds a boundary search may travel from the cited timestamp
-LOUD_DB_OVER_MEDIAN = 8.0   
+LOUD_DB_OVER_MEDIAN = 8.0
 LOUD_MIN_DUR = 1.0
+
+# How many of the detected moments render without the user asking. Every render
+# re-downloads the whole source, so rendering all MAX_MOMENTS would cost far more than
+# a user typically uses. The rest stay as moments they can render on demand.
+AUTO_RENDER_TOP = 4
+AUTO_RENDER_CAPTIONS = True
 
 SYSTEM_INSTRUCTIONS = f"""You find the most clip-worthy moments in a video from its \
 timestamped transcript. The script below interleaves spoken lines with energy markers:
@@ -212,6 +219,53 @@ def _snap_moment(raw_start, raw_end, boundaries, silences):
     return raw_start, raw_end   # nothing snapped stayed in bounds; keep the citation
 
 
+def _queue_auto_renders(ctx: TaskContext, moments: list[Moment]) -> list[Clip]:
+    """Create queued Clip rows for the strongest moments and schedule their renders.
+
+    The Clip row is written here rather than by the render job so the frontend can list
+    every pending clip the instant detect commits — one that hasn't been picked up yet
+    reads as "rendering" on screen instead of only appearing once its file exists.
+
+    Ordering is by the blended `final` score, so the clips that fill the screen first are
+    the ones most worth watching.
+    """
+    ranked = sorted(moments, key=lambda m: m.scores["final"], reverse=True)
+
+    clips = []
+    for moment in ranked[:AUTO_RENDER_TOP]:
+        moment.status = "kept"
+        clip = Clip(
+            moment_id=moment.id,
+            video_id=ctx.video.id,
+            user_id=ctx.video.user_id,
+            status="queued",
+            params={
+                # float() because these columns are Numeric: after a flush they can come
+                # back as Decimal, which json can't serialise into the job params.
+                "start": float(moment.start_sec),
+                "end": float(moment.end_sec),
+                "format": DEFAULT_FORMAT,
+                "captions": AUTO_RENDER_CAPTIONS,
+            },
+        )
+        ctx.db.add(clip)
+        clips.append(clip)
+
+    ctx.db.flush()   # mint the clip ids the render jobs are keyed on
+
+    for clip in clips:
+        # Deferred until detect's transaction commits — see TaskContext.enqueue_next.
+        # Renders go to the cpu pool; the pipeline stages are IO-bound.
+        ctx.enqueue_next(
+            "app.tasks.render.render",
+            str(ctx.video.id),
+            {"clip_id": str(clip.id)},
+            queue="cpu",
+        )
+
+    return clips
+
+
 @job_contract("detect")
 def detect(ctx: TaskContext) -> None:
     if _detect_done(ctx):
@@ -270,7 +324,7 @@ def detect(ctx: TaskContext) -> None:
         # Turn candidates into Moment rows. Timestamps come back as the h:mm:ss strings
         # the model cited, so parse them back to seconds. Anything outside the duration
         # window is dropped here — the returned/kept gap is a signal we record in metrics.
-        kept = 0
+        kept: list[Moment] = []
         for m in candidates:
             raw_start, raw_end = _parse_ts(m.start), _parse_ts(m.end)
             dur = raw_end - raw_start
@@ -278,7 +332,7 @@ def detect(ctx: TaskContext) -> None:
                 continue
             start_sec, end_sec = _snap_moment(raw_start, raw_end, boundaries, silences)
             final = 0.4 * m.hook + 0.3 * m.shareability + 0.2 * m.completeness + 0.1 * m.visual
-            ctx.db.add(Moment(
+            moment = Moment(
                 video_id=ctx.video.id,
                 run_id=run.id,
                 start_sec=start_sec, end_sec=end_sec,
@@ -288,9 +342,13 @@ def detect(ctx: TaskContext) -> None:
                         "final": round(final, 3)},
                 type=m.type, title=m.title, reason=m.reason,
                 transcript_excerpt=m.transcript_excerpt,
-            ))
-            kept += 1
-        
+            )
+            ctx.db.add(moment)
+            kept.append(moment)
+
+        ctx.db.flush()   # mint the moment ids the clips point back to
+        clips = _queue_auto_renders(ctx, kept)
+
         ctx.video.pipeline = {**(ctx.video.pipeline or {}), "stage": "detect", "progress_pct": 80}
 
 
@@ -298,7 +356,8 @@ def detect(ctx: TaskContext) -> None:
             "model": GEMINI_MODEL,
             "prompt_version": PROMPT_VERSION,
             "moments_returned": len(candidates),
-            "moments_kept": kept,
+            "moments_kept": len(kept),
+            "clips_queued": len(clips),
             "input_tokens": in_tok,
             "output_tokens": out_tok,
             "est_cost_usd": est_cost,

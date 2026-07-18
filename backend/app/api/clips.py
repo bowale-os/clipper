@@ -91,6 +91,47 @@ def create_clip(
     }
 
 
+@c_router.get("", status_code=status.HTTP_200_OK)
+def list_clips(
+    video_id: uuid.UUID,
+    user: User = Depends(get_current_user_record),
+    db: Session = Depends(get_db),
+):
+    """Every clip for a video, in rank order, whatever state it is in.
+
+    This is what the grid polls while a video finishes. Clips that detect queued but no
+    worker has finished come back with status "queued" or "rendering" and a null url, so
+    the UI can hold a placeholder in the right slot instead of having the card pop in
+    late. Ordering is by created_at, which detect writes in descending score order.
+    """
+    video = get_owned_video(db, video_id, user)
+
+    rows = db.execute(
+        select(Clip, Moment)
+        .outerjoin(Moment, Clip.moment_id == Moment.id)   # outer: manual clips have no moment
+        .where(Clip.video_id == video.id, Clip.user_id == user.id)
+        .order_by(Clip.created_at)
+    ).all()
+
+    return {
+        "video_id": str(video.id),
+        "video_status": video.status.value,
+        "clips": [
+            {
+                "clip_id": str(clip.id),
+                "status": clip.status,
+                "url": generate_download_url(clip.r2_key) if clip.status == "ready" else None,
+                "start": clip.params.get("start"),
+                "end": clip.params.get("end"),
+                "format": clip.params.get("format"),
+                "title": moment.title if moment else None,
+                "score": moment.scores.get("final") if moment else None,
+            }
+            for clip, moment in rows
+        ],
+    }
+
+
 @c_router.get("/{clip_id}", status_code=status.HTTP_200_OK)
 def get_clip(
     clip_id: uuid.UUID,
