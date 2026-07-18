@@ -12,7 +12,6 @@ from sqlalchemy import select
 from app.config.secrets import settings
 from app.db.models import Transcript, VideoStatus
 from app.workers.contract import TaskContext, job_contract
-from app.workers.queues import io_queue
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +116,9 @@ def transcribe(ctx: TaskContext) -> None:
 
     try:
         # Reuse ingest's 16 kHz mono Opus — no need to re-download or re-decode the source.
+        if "audio_key" not in (video.artifacts or {}):
+            logger.error("transcribe %s: missing audio_key in artifacts: %r", video.id, video.artifacts)
+            raise ValueError(f"Job artifacts missing 'audio_key' for video {video.id}")
         download_file(video.artifacts["audio_key"], audio_path)
         video.pipeline = {**video.pipeline, "progress_pct": 40}
 
@@ -179,5 +181,5 @@ def transcribe(ctx: TaskContext) -> None:
 
     logger.info("transcribe %s: done in %dms, enqueuing detect", video.id, ctx.metrics["transcribe_ms"])
 
-    # Enqueue next stage. String path avoids importing detect before it exists.
-    io_queue.enqueue("app.tasks.detect.detect", str(video.id))
+    # Deferred until this job's transaction commits — see TaskContext.enqueue_next.
+    ctx.enqueue_next("app.tasks.detect.detect", str(video.id))

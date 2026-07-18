@@ -17,6 +17,15 @@ class TaskContext:
     job: Job
     params: dict
     metrics: dict = field(default_factory=dict)
+    next_stage: Optional[tuple] = None
+
+    def enqueue_next(self, task_path: str, *args) -> None:
+        """Record the next pipeline stage to enqueue once this job's transaction
+        commits. Must not call Queue.enqueue directly from a task — a stage's
+        durable state (e.g. ingest's audio_key) isn't real until this job's own
+        commit succeeds, and the next stage would read a video row that doesn't
+        have it yet if enqueued any earlier."""
+        self.next_stage = (task_path, args)
 
 SkipIf = Callable[["TaskContext"], bool]
 
@@ -94,13 +103,14 @@ def job_contract(
     def decorator(main_fn):
         @functools.wraps(main_fn)
         def wrapper(video_id, params=None):
+            next_stage = None
             with session_scope() as session:
-                current_job = get_current_job() 
+                current_job = get_current_job()
                 cjob_id = current_job.id if current_job else None
                 video = session.get(Video, video_id, with_for_update=True)
                 if not video:
                     raise RuntimeError(f"Video {video_id} not found")
-                
+
                 stmt = select(Job).where(Job.rq_job_id == cjob_id)
                 job = session.execute(stmt).scalar_one_or_none()
 
@@ -115,7 +125,7 @@ def job_contract(
                     )
                     session.add(job)
                     session.flush()
-                
+
                 ctx = TaskContext(session, video, job,params or {}, {})
                 if skip_if is not None and skip_if(ctx):
                     job.status = "done"
@@ -127,6 +137,7 @@ def job_contract(
                     job.status = "done"
                     job.finished_at = datetime.now(timezone.utc)
                     job.metrics = ctx.metrics
+                    next_stage = ctx.next_stage
                 except Exception as e:
                     # Discard the poisoned session, then record the failure in its own
                     # transaction — writing it here would just roll back with everything else.
@@ -135,6 +146,14 @@ def job_contract(
                         job_type, video_id, cjob_id, params or {}, e, fail_video, on_failure
                     )
                     raise
+
+            # Only reachable once `with session_scope()` has exited *without* raising,
+            # i.e. session.commit() actually succeeded — so the next stage never starts
+            # before this job's own durable state (audio_key, transcript, ...) is real.
+            if next_stage is not None:
+                from app.workers.queues import io_queue
+                task_path, args = next_stage
+                io_queue.enqueue(task_path, *args)
         return wrapper
     return decorator
 

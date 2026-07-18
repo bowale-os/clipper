@@ -10,7 +10,6 @@ import time
 
 from app.db.models import VideoStatus
 from app.workers.contract import TaskContext, job_contract
-from app.workers.queues import io_queue
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +144,12 @@ def ingest(ctx: TaskContext) -> None:
 
     video.pipeline = {**(video.pipeline or {}), "stage": "ingest", "progress_pct": 0}
     video.status = VideoStatus.processing
+    # Commit each checkpoint as we go — ffmpeg steps run long with no DB activity in
+    # between, and a connection idle that long gets dropped by Neon's autosuspend (see
+    # backend/app/workers/contract.py for how the pipeline's final commit is gated).
+    # Committing periodically keeps the connection alive and releases the row lock
+    # between steps instead of holding it for the whole task.
+    ctx.db.commit()
 
     from app.services.r2_client import download_file, upload_bytes, upload_file
 
@@ -168,24 +173,28 @@ def ingest(ctx: TaskContext) -> None:
         probed_size = os.path.getsize(video_path)
         duration = _ffprobe_duration(video_path)
         video.pipeline = {**video.pipeline, "progress_pct": 20}
+        ctx.db.commit()
         logger.info("ingest %s: downloaded source (%d bytes, %.1fs)", video.id, probed_size, duration)
 
         # audio.ogg — the only full read of the source; everything else is cheap.
         _extract_audio(video_path, audio_path)
         upload_file(audio_path, audio_key)
         video.pipeline = {**video.pipeline, "progress_pct": 50}
+        ctx.db.commit()
         logger.info("ingest %s: audio extracted + uploaded", video.id)
 
         # features.json — energy + silence timeline (drives detect's markers & snapping).
         features = {"rms": _rms_timeline(audio_path), "silences": _detect_silences(audio_path)}
         upload_bytes(json.dumps(features).encode("utf-8"), features_key, "application/json")
         video.pipeline = {**video.pipeline, "progress_pct": 70}
+        ctx.db.commit()
         logger.info("ingest %s: features computed (silences=%d)", video.id, len(features["silences"]))
 
         # keyframes.json — seek math for later render/preview.
         keyframes = _keyframes(video_path)
         upload_bytes(json.dumps(keyframes).encode("utf-8"), keyframes_key, "application/json")
         video.pipeline = {**video.pipeline, "progress_pct": 85}
+        ctx.db.commit()
         logger.info("ingest %s: keyframes computed (%d)", video.id, len(keyframes))
 
         # thumbs.jpg — scrubber sprite for the review UI.
@@ -216,5 +225,5 @@ def ingest(ctx: TaskContext) -> None:
 
     logger.info("ingest %s: done in %dms, enqueuing transcribe", video.id, ctx.metrics["ingest_ms"])
 
-    # Enqueue next stage. String path avoids importing transcribe before it exists.
-    io_queue.enqueue("app.tasks.transcribe.transcribe", str(video.id))
+    # Deferred until this job's transaction commits — see TaskContext.enqueue_next.
+    ctx.enqueue_next("app.tasks.transcribe.transcribe", str(video.id))
