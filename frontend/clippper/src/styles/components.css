@@ -602,14 +602,15 @@
   aspect-ratio: 16 / 9;
 }
 
-/* Boxed posters ignore their own shape and always claim a 9:16 slot, so every
-   tile in a grid is the same height whatever shape the clip is. The frame
-   inside keeps the real shape and letterboxes against the card. */
+/* Boxed posters ignore their own shape entirely: every tile in the grid is the
+   same 9:16 black card, filled edge to edge, whatever shape the clip is. The
+   badge in the corner is what tells you the shape. Sizing the tile by format
+   made a wide clip a stub next to tall ones, and letterboxing it inside a fixed
+   box just made it the odd one out a second way. */
 .poster.is-boxed,
 .poster.is-boxed.is-square,
 .poster.is-boxed.is-wide {
   aspect-ratio: 9 / 16;
-  background: var(--white);
 }
 
 .poster-frame {
@@ -620,20 +621,6 @@
   height: 100%;
   overflow: hidden;
   background: var(--void);
-}
-
-.poster.is-boxed .poster-frame {
-  height: auto;
-  max-height: 100%;
-  aspect-ratio: 9 / 16;
-}
-
-.poster.is-boxed.is-square .poster-frame {
-  aspect-ratio: 1 / 1;
-}
-
-.poster.is-boxed.is-wide .poster-frame {
-  aspect-ratio: 16 / 9;
 }
 
 /* Flat black stands in until the backend can hand back a still frame.
@@ -727,8 +714,8 @@
 }
 
 /* A 16:9 poster is barely half the height of a 9:16 one, so three lines would
-   swallow it. */
-.poster.is-wide .poster-caption {
+   swallow it. Boxed posters are tall regardless of format, so they keep three. */
+.poster.is-wide:not(.is-boxed) .poster-caption {
   -webkit-line-clamp: 2;
   line-clamp: 2;
 }
