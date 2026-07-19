@@ -7,9 +7,12 @@ import ClipTile from '../components/ClipTile'
 import ClipPreview from '../components/ClipPreview'
 import LiveStatus from '../components/LiveStatus'
 import EmptyState from '../components/EmptyState'
+import DeleteVideo from '../components/DeleteVideo'
 import { ScissorsIcon } from '../components/icons'
 import { useUserVideos } from '../hooks/useUserVideos'
 import { useVideoMoments } from '../hooks/useVideoMoments'
+import { useVideoClips } from '../hooks/useVideoClips'
+import { useDeleteVideo } from '../hooks/useDeleteVideo'
 import { useClipRenders, getMomentKey } from '../hooks/useClipRenders'
 import { usePrefs } from '../hooks/usePrefs'
 import { flattenVideos } from '../lib/videos'
@@ -44,10 +47,22 @@ function Studio() {
   const { user } = useUser()
   const { prefs } = usePrefs()
   const { data, error, isLoading, refresh } = useUserVideos()
-  const { renders, start } = useClipRenders()
+  const { renders, start, seed } = useClipRenders()
 
   const [selectedVideoId, setSelectedVideoId] = useState('')
   const [openMoment, setOpenMoment] = useState(null)
+
+  const handleDeleted = useCallback(
+    (deletedId) => {
+      // Drop the pick if it was the deleted one, so the list falls back to the newest.
+      setSelectedVideoId((current) => (current === deletedId ? '' : current))
+      setOpenMoment(null)
+      refresh({ markLoading: false })
+    },
+    [refresh],
+  )
+
+  const remove = useDeleteVideo({ onDeleted: handleDeleted })
 
   const videos = useMemo(() => flattenVideos(data), [data])
   const readyVideos = useMemo(() => videos.filter((video) => video.status === 'ready'), [videos])
@@ -65,7 +80,51 @@ function Studio() {
     isLoading: isMomentsLoading,
   } = useVideoMoments(activeVideoId)
 
-  const moments = momentsData?.moments || []
+  const { clips: serverClips } = useVideoClips(activeVideoId)
+
+  const moments = useMemo(() => momentsData?.moments || [], [momentsData])
+
+  // Hand the already-rendered clips to the render store, keyed the way the tiles
+  // are, so a clip detect finished on its own shows as ready straight away.
+  useEffect(() => {
+    if (!serverClips.length || !moments.length) {
+      return
+    }
+
+    const byId = new Map(moments.map((moment) => [moment.id, moment]))
+    const entries = serverClips
+      .filter((clip) => byId.has(clip.moment_id))
+      .map((clip) => {
+        const moment = byId.get(clip.moment_id)
+
+        return {
+          captions: clip.captions,
+          clipId: clip.clip_id,
+          format: clip.format,
+          key: getMomentKey(moment, activeVideoId),
+          moment,
+          status: clip.status,
+          url: clip.url,
+        }
+      })
+
+    if (entries.length) {
+      seed(entries)
+    }
+  }, [activeVideoId, moments, seed, serverClips])
+
+  // Moments we already have a clip for lead the grid; the rest are still just
+  // moments, and cost a render the first time someone wants one.
+  const { done, rest } = useMemo(() => {
+    const withClip = new Set(
+      serverClips.map((clip) => clip.moment_id).filter(Boolean),
+    )
+
+    return {
+      done: moments.filter((moment) => withClip.has(moment.id)),
+      rest: moments.filter((moment) => !withClip.has(moment.id)),
+    }
+  }, [moments, serverClips])
 
   // Something is still cooking, so keep the list warm without a refresh button.
   useEffect(() => {
@@ -79,15 +138,22 @@ function Studio() {
 
   const handleRender = useCallback(
     ({ moment, format, autoDownload = false }) => {
+      // No shape asked for means "just give me this clip". If one is already
+      // rendered we hand that one over, even if it came out a different shape
+      // than the preference, rather than quietly paying to render it again. The
+      // preview keeps the buttons for asking for another shape on purpose.
+      const existing = renders[getMomentKey(moment, activeVideoId)]
+      const settled = existing?.status === 'ready' && existing.url
+
       start({
         autoDownload,
-        captions: prefs.captions,
-        format: format || prefs.format,
+        captions: settled && !format ? existing.captions : prefs.captions,
+        format: format || (settled ? existing.format : prefs.format),
         moment,
         videoId: activeVideoId,
       })
     },
-    [activeVideoId, prefs.captions, prefs.format, start],
+    [activeVideoId, prefs.captions, prefs.format, renders, start],
   )
 
   const handleDownload = useCallback(
@@ -139,7 +205,9 @@ function Studio() {
     )
   }
 
-  const readyCount = moments.length
+  // Only clips with a file behind them. Counting every moment here promised more
+  // than the screen was actually handing over.
+  const readyCount = serverClips.filter((clip) => clip.status === 'ready').length
 
   return (
     <div className="app-shell">
@@ -158,7 +226,9 @@ function Studio() {
             ? `${readyCount} ${readyCount === 1 ? 'clip is' : 'clips are'} ready.`
             : workingVideos.length
               ? 'We are still watching your stream.'
-              : 'Drop in a stream to get started.'}
+              : moments.length
+                ? 'Your clips are on the way.'
+                : 'Drop in a stream to get started.'}
         </p>
 
         <DropZone
@@ -182,18 +252,31 @@ function Studio() {
               <h2>Working on it</h2>
             </div>
             <div className="processing-list">
-              {workingVideos.map((video) => (
-                <div className="processing-row" key={getVideoId(video)}>
-                  <span className="processing-thumb" />
-                  <div className="processing-body">
-                    <b>{video.filename || 'Your stream'}</b>
-                    <div className="progress-track is-indeterminate">
-                      <span />
+              {workingVideos.map((video) => {
+                const id = getVideoId(video)
+
+                return (
+                  <div className="processing-row" key={id}>
+                    <span className="processing-thumb" />
+                    <div className="processing-body">
+                      <b>{video.filename || 'Your stream'}</b>
+                      <div className="progress-track is-indeterminate">
+                        <span />
+                      </div>
                     </div>
+                    <LiveStatus status={video.status} />
+                    <DeleteVideo
+                      error={remove.error}
+                      filename={video.filename}
+                      isDeleting={remove.deletingId === id}
+                      isPending={remove.pendingId === id}
+                      onAsk={() => remove.ask(id)}
+                      onCancel={remove.cancel}
+                      onConfirm={() => remove.confirm(id)}
+                    />
                   </div>
-                  <LiveStatus status={video.status} />
-                </div>
-              ))}
+                )
+              })}
             </div>
           </>
         ) : null}
@@ -228,9 +311,20 @@ function Studio() {
               <h2>
                 Ready · <b>{activeVideo.filename || 'Untitled'}</b>
               </h2>
-              <Link className="section-link" to={`/trim/${encodeURIComponent(activeVideoId)}`}>
-                Cut your own
-              </Link>
+              <div className="section-actions">
+                <Link className="section-link" to={`/trim/${encodeURIComponent(activeVideoId)}`}>
+                  Cut your own
+                </Link>
+                <DeleteVideo
+                  error={remove.error}
+                  filename={activeVideo.filename}
+                  isDeleting={remove.deletingId === activeVideoId}
+                  isPending={remove.pendingId === activeVideoId}
+                  onAsk={() => remove.ask(activeVideoId)}
+                  onCancel={remove.cancel}
+                  onConfirm={() => remove.confirm(activeVideoId)}
+                />
+              </div>
             </div>
 
             {momentsError ? <p className="message error">{momentsError}</p> : null}
@@ -242,19 +336,48 @@ function Studio() {
                 ))}
               </div>
             ) : moments.length ? (
-              <div className="clip-grid">
-                {moments.map((moment, index) => (
-                  <ClipTile
-                    format={renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format}
-                    isTop={index === 0}
-                    key={getMomentKey(moment, activeVideoId)}
-                    moment={moment}
-                    onDownload={handleDownload}
-                    onOpen={setOpenMoment}
-                    render={renders[getMomentKey(moment, activeVideoId)]}
-                  />
-                ))}
-              </div>
+              <>
+                {done.length ? (
+                  <div className="clip-grid">
+                    {done.map((moment, index) => (
+                      <ClipTile
+                        format={renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format}
+                        isTop={index === 0}
+                        key={getMomentKey(moment, activeVideoId)}
+                        moment={moment}
+                        onDownload={handleDownload}
+                        onOpen={setOpenMoment}
+                        render={renders[getMomentKey(moment, activeVideoId)]}
+                      />
+                    ))}
+                  </div>
+                ) : null}
+
+                {rest.length ? (
+                  <>
+                    <div className="section-head">
+                      <h2>Also worth a look</h2>
+                      <span className="section-note">
+                        We spotted these too. Tap one to make it.
+                      </span>
+                    </div>
+                    <div className="clip-grid">
+                      {rest.map((moment) => (
+                        <ClipTile
+                          format={
+                            renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format
+                          }
+                          key={getMomentKey(moment, activeVideoId)}
+                          moment={moment}
+                          onDownload={handleDownload}
+                          onOpen={setOpenMoment}
+                          render={renders[getMomentKey(moment, activeVideoId)]}
+                        />
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </>
             ) : (
               <EmptyState
                 description="We got through this one but nothing stood out. A longer stream usually gives us more to work with, or you can cut a bit yourself."

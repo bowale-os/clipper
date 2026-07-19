@@ -28,7 +28,12 @@ function Poster({ caption, format = '9:16', isTop = false, onClick, score, showF
       <span className="poster-play">
         <PlayIcon />
       </span>
-      {caption ? <span className="poster-caption">{caption}</span> : null}
+      {/* title carries the full text, since long ones are clamped to three lines. */}
+      {caption ? (
+        <span className="poster-caption" title={caption}>
+          {caption}
+        </span>
+      ) : null}
     </Tag>
   )
 }

@@ -295,6 +295,16 @@ export async function createClip({
   return data
 }
 
+// Every clip already on record for a video, including the ones detect rendered
+// without being asked. The grid reads this so those clips show up as ready
+// instead of looking unrendered and being paid for twice.
+export async function listClips({ videoId, token }) {
+  return requestJson(`/clips?video_id=${encodeURIComponent(videoId)}`, {
+    method: 'GET',
+    token,
+  })
+}
+
 export async function getClip({ clipId, token }) {
   return requestJson(`/clips/${encodeURIComponent(clipId)}`, {
     method: 'GET',

@@ -80,6 +80,7 @@ export function useClipRenders() {
         clipId: null,
         error: '',
         format,
+        local: true,
         moment,
         startedAt: Date.now(),
         status: 'queued',
@@ -109,6 +110,51 @@ export function useClipRenders() {
     },
     [patch, runWithToken],
   )
+
+  /**
+   * Adopt clips the server already knows about, so they read as ready or working
+   * without anyone clicking. Entries are shaped exactly like the ones start()
+   * makes, which means the poller below picks up the unfinished ones for free.
+   *
+   * A render started in this session always wins: the user asked for that one
+   * after the list was fetched, so it is the newer intent.
+   */
+  const seed = useCallback((entries) => {
+    setRenders((current) => {
+      const next = { ...current }
+      let changed = false
+
+      for (const entry of entries) {
+        const existing = next[entry.key]
+
+        if (existing?.local) {
+          continue
+        }
+
+        // Re-seeding an unchanged entry would reset startedAt and keep the
+        // render alive past its timeout, so only write real changes.
+        if (existing && existing.status === entry.status && existing.url === entry.url) {
+          continue
+        }
+
+        next[entry.key] = {
+          autoDownload: false,
+          captions: entry.captions,
+          clipId: entry.clipId,
+          error: '',
+          format: entry.format,
+          local: false,
+          moment: entry.moment,
+          startedAt: Date.now(),
+          status: entry.status,
+          url: entry.url,
+        }
+        changed = true
+      }
+
+      return changed ? next : current
+    })
+  }, [])
 
   const clear = useCallback((key) => {
     setRenders((current) => {
@@ -191,5 +237,5 @@ export function useClipRenders() {
     }
   }, [patch, runWithToken])
 
-  return { renders, start, clear }
+  return { renders, start, seed, clear }
 }
