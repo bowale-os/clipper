@@ -999,6 +999,13 @@
   background: var(--cream);
 }
 
+/* With the video in place there is no narrow poster column to sit beside, so
+   the text gets the full width instead of the 190px slot. */
+.preview-card.is-playable {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+
 @media (max-width: 560px) {
   .preview-card {
     grid-template-columns: 1fr;

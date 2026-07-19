@@ -62,9 +62,14 @@ function ClipPreview({ format, moment, onClose, onRender, render }) {
       }}
       role="presentation"
     >
-      <div className="preview-card" role="dialog" aria-modal="true" aria-label={title}>
+      <div
+        className={`preview-card${isReady ? ' is-playable' : ''}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+      >
         {isReady ? (
-          <video className="preview-video" controls src={render.url} style={{ gridColumn: '1 / -1' }}>
+          <video className="preview-video" controls src={render.url}>
             <track kind="captions" />
           </video>
         ) : (
