@@ -10,7 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db.models import Clip
-from app.workers.contract import TaskContext, job_contract
+from app.workers.contract import TaskContext, WorkCancelled, job_contract
 from app.services.r2_client import download_bytes, download_file, upload_file
 
 # Output presets: aspect ratio -> exact (width, height). 9:16 is the short-form default.
@@ -49,7 +49,10 @@ def _load_clip(ctx: TaskContext, db) -> Clip:
         raise RuntimeError("render requires params['clip_id']")
     clip = db.get(Clip, uuid.UUID(clip_id))
     if clip is None:
-        raise RuntimeError(f"Clip {clip_id} not found")
+        # Gone rather than broken: the clip's video was deleted, or the row was
+        # replaced by a newer version, so there is nothing left to render. Retrying
+        # would fail identically four times over.
+        raise WorkCancelled(f"Clip {clip_id} no longer exists")
     return clip
 
 

@@ -6,9 +6,25 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Callable, Optional
 import functools
+import logging
 
 from app.db.session import session_scope
 from app.db.models import Job, Video, VideoStatus
+
+logger = logging.getLogger(__name__)
+
+
+class WorkCancelled(Exception):
+    """The row this job exists to work on is gone, so the job can never succeed.
+
+    Distinct from a failure on purpose. A Groq 503 is transient and worth the four
+    attempts JOB_RETRY buys; a deleted video is not, and retrying one only fills the
+    log with the same traceback every few minutes for a quarter of an hour. Contract
+    catches this, closes the job out as cancelled, and returns normally so RQ sees a
+    finished job rather than a failed one with retries left.
+
+    Raise it from a task whose own subject has been deleted (see render's clip lookup).
+    """
 
 
 class ReadOnlyVideo:
@@ -185,6 +201,27 @@ def _record_failure(
             on_failure(session, params, err)
 
 
+def _close_cancelled(job_type: str, video_id, job_id, err: Exception) -> None:
+    """Close a job out as cancelled and say so in the log.
+
+    job_id may be None, or may name a row that no longer exists: a cancel raised from
+    skip_if rolls back the transaction that had just inserted it, and a cancel caused
+    by a deleted video took the Job rows with it on cascade. Both are fine, and neither
+    is worth a second error on top of the first.
+    """
+    logger.info("%s cancelled for video %s: %s", job_type, video_id, err)
+
+    if job_id is None:
+        return
+
+    with session_scope() as session:
+        job = session.get(Job, job_id)
+        if job is not None:
+            job.status = "cancelled"
+            job.error = str(err)
+            job.finished_at = datetime.now(timezone.utc)
+
+
 def _will_retry(current_job) -> bool:
     """Whether RQ will run this job again after the current failure.
 
@@ -226,36 +263,46 @@ def job_contract(
             cjob_id = current_job.id if current_job else None
 
             # Phase 1 — claim the job. Short transaction; released before any real work.
-            with session_scope() as session:
-                video = session.get(Video, video_id)
-                if not video:
-                    raise RuntimeError(f"Video {video_id} not found")
+            ctx = None
+            try:
+                with session_scope() as session:
+                    video = session.get(Video, video_id)
+                    if not video:
+                        # Deleted while this job sat on the queue.
+                        raise WorkCancelled(f"video {video_id} was deleted")
 
-                stmt = select(Job).where(Job.rq_job_id == cjob_id)
-                job = session.execute(stmt).scalar_one_or_none()
+                    stmt = select(Job).where(Job.rq_job_id == cjob_id)
+                    job = session.execute(stmt).scalar_one_or_none()
 
-                if job is None:
-                    job = Job(
+                    if job is None:
+                        job = Job(
+                            video_id=video.id,
+                            type=job_type,
+                            rq_job_id=cjob_id,
+                            started_at=datetime.now(timezone.utc),
+                            metrics={},
+                        )
+                        session.add(job)
+                    job.status = "running"
+                    session.flush()
+
+                    ctx = TaskContext(
                         video_id=video.id,
-                        type=job_type,
-                        rq_job_id=cjob_id,
-                        started_at=datetime.now(timezone.utc),
-                        metrics={},
+                        job_id=job.id,
+                        params=params or {},
+                        video=ReadOnlyVideo(video),
                     )
-                    session.add(job)
-                job.status = "running"
-                session.flush()
-
-                ctx = TaskContext(
-                    video_id=video.id,
-                    job_id=job.id,
-                    params=params or {},
-                    video=ReadOnlyVideo(video),
-                )
-                skip = skip_if is not None and skip_if(ctx)
-                if skip:
-                    job.status = "done"
-                    job.finished_at = datetime.now(timezone.utc)
+                    skip = skip_if is not None and skip_if(ctx)
+                    if skip:
+                        job.status = "done"
+                        job.finished_at = datetime.now(timezone.utc)
+            except WorkCancelled as e:
+                # Two ways to land here: the video is gone, or skip_if went looking for
+                # the task's own subject and found it gone too (render loads its Clip
+                # there). Either way the work no longer exists, so close it out rather
+                # than letting it raise into four attempts at the same dead row.
+                _close_cancelled(job_type, video_id, ctx.job_id if ctx else None, e)
+                return
 
             if skip:
                 return
@@ -263,6 +310,13 @@ def job_contract(
             # Phase 2 — the actual work, holding no transaction and no connection.
             try:
                 main_fn(ctx)
+            except WorkCancelled as e:
+                # Returning rather than re-raising is the point: RQ only retries a job
+                # whose function raised, and this one is never going to succeed. Note
+                # this skips on_failure too, so render leaves no error tombstone on a
+                # clip row that is already gone.
+                _close_cancelled(job_type, video_id, ctx.job_id, e)
+                return
             except Exception as e:
                 # Only fail the video once RQ has run out of retries; otherwise a
                 # transient upstream error would show the user a failed video that
