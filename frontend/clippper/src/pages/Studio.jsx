@@ -113,11 +113,15 @@ function Studio() {
     }
   }, [activeVideoId, moments, seed, serverClips])
 
-  // Moments we already have a clip for lead the grid; the rest are still just
-  // moments, and cost a render the first time someone wants one.
+  // Moments with a finished clip behind them lead the grid; everything else,
+  // including clips still rendering or ones that failed, stays below. A clip row
+  // existing is not the same as a clip you can watch.
   const { done, rest } = useMemo(() => {
     const withClip = new Set(
-      serverClips.map((clip) => clip.moment_id).filter(Boolean),
+      serverClips
+        .filter((clip) => clip.status === 'ready' && clip.url)
+        .map((clip) => clip.moment_id)
+        .filter(Boolean),
     )
 
     return {
@@ -313,9 +317,7 @@ function Studio() {
         {activeVideo ? (
           <>
             <div className="section-head">
-              <h2>
-                Ready · <b>{activeVideo.filename || 'Untitled'}</b>
-              </h2>
+              <h2>{activeVideo.filename || 'Untitled'}</h2>
               <div className="section-actions">
                 <Link className="section-link" to={`/trim/${encodeURIComponent(activeVideoId)}`}>
                   Cut your own
@@ -343,19 +345,30 @@ function Studio() {
             ) : moments.length ? (
               <>
                 {done.length ? (
-                  <div className="clip-grid">
-                    {done.map((moment, index) => (
-                      <ClipTile
-                        format={renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format}
-                        isTop={index === 0}
-                        key={getMomentKey(moment, activeVideoId)}
-                        moment={moment}
-                        onDownload={handleDownload}
-                        onOpen={setOpenMoment}
-                        render={renders[getMomentKey(moment, activeVideoId)]}
-                      />
-                    ))}
-                  </div>
+                  <>
+                    <div className="section-head">
+                      <h2>Ready</h2>
+                      <span className="section-note">
+                        {done.length === 1 ? 'One clip is' : `${done.length} clips are`} done and
+                        ready to post.
+                      </span>
+                    </div>
+                    <div className="clip-grid">
+                      {done.map((moment, index) => (
+                        <ClipTile
+                          format={
+                            renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format
+                          }
+                          isTop={index === 0}
+                          key={getMomentKey(moment, activeVideoId)}
+                          moment={moment}
+                          onDownload={handleDownload}
+                          onOpen={setOpenMoment}
+                          render={renders[getMomentKey(moment, activeVideoId)]}
+                        />
+                      ))}
+                    </div>
+                  </>
                 ) : null}
 
                 {rest.length ? (
@@ -395,6 +408,7 @@ function Studio() {
           <EmptyState
             description="Drop a stream above and your clips will start showing up here."
             glyph={<ScissorsIcon size={22} />}
+            roomy
             title="No clips yet"
           />
         ) : null}

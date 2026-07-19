@@ -14,6 +14,7 @@ function ClipTile({ format, isTop = false, moment, onDownload, onOpen, render })
   return (
     <article className="clip-tile">
       <Poster
+        boxed
         caption={title}
         format={format}
         isTop={isTop}

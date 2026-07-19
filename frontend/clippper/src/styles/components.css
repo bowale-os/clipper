@@ -584,7 +584,6 @@
 }
 
 .poster {
-  position: relative;
   display: grid;
   place-items: center;
   width: 100%;
@@ -603,10 +602,44 @@
   aspect-ratio: 16 / 9;
 }
 
+/* Boxed posters ignore their own shape and always claim a 9:16 slot, so every
+   tile in a grid is the same height whatever shape the clip is. The frame
+   inside keeps the real shape and letterboxes against the card. */
+.poster.is-boxed,
+.poster.is-boxed.is-square,
+.poster.is-boxed.is-wide {
+  aspect-ratio: 9 / 16;
+  background: var(--white);
+}
+
+.poster-frame {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--void);
+}
+
+.poster.is-boxed .poster-frame {
+  height: auto;
+  max-height: 100%;
+  aspect-ratio: 9 / 16;
+}
+
+.poster.is-boxed.is-square .poster-frame {
+  aspect-ratio: 1 / 1;
+}
+
+.poster.is-boxed.is-wide .poster-frame {
+  aspect-ratio: 16 / 9;
+}
+
 /* Flat black stands in until the backend can hand back a still frame.
    The bands read as the safe areas of the finished clip. */
-.poster::before,
-.poster::after {
+.poster-frame::before,
+.poster-frame::after {
   content: '';
   position: absolute;
   inset: 0 0 auto;
@@ -615,7 +648,7 @@
   opacity: 0.28;
 }
 
-.poster::after {
+.poster-frame::after {
   inset: auto 0 0;
 }
 
@@ -929,6 +962,13 @@
   border-radius: var(--radius-card);
   background: var(--cream-2);
   text-align: center;
+}
+
+/* The first-run state sits alone under the drop zone, so it wants more air
+   above it than an empty state that follows other content. */
+.empty-state-roomy {
+  margin-top: var(--space-8);
+  padding-top: var(--space-20);
 }
 
 .empty-glyph {

@@ -48,9 +48,9 @@ def _units(fraction_of_height: float) -> str:
 # old value was thick enough that the black swallowed the letterforms and the captions
 # stopped reading as white at all.
 CAPTION_STYLE = (
-    f"Fontname=Inter,FontSize={_units(0.025)},Bold=1,"
+    f"Fontname=Inter,FontSize={_units(0.05)},Bold=1,"
     "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-    f"BorderStyle=1,Outline={_units(0.01)},Shadow=0,"
+    f"BorderStyle=1,Outline={_units(0.02)},Shadow=0,"
     # Sits just above the phone UI that overlays the bottom of a full-screen player.
     f"Alignment=2,MarginV={_units(0.060)}"
 )
