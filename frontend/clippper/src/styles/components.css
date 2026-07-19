@@ -1029,10 +1029,32 @@
   color: var(--ash);
 }
 
+/* Shape and captions sit above the one primary button as picks, not as their
+   own stack of buttons. Labels left, controls right, separated by hairlines. */
+.preview-options {
+  margin-top: auto;
+  border-top: var(--hairline) solid var(--border);
+}
+
+.preview-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 9px 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ash);
+}
+
+.preview-option + .preview-option {
+  border-top: var(--hairline) solid var(--border);
+}
+
 .preview-actions {
   display: grid;
   gap: 7px;
-  margin-top: auto;
+  margin-top: var(--space-3);
 }
 
 .preview-wait {

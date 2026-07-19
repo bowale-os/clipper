@@ -11,6 +11,19 @@ CLERK_FRONTEND_API = settings.CLERK_FRONTEND_API
 if ENV == "development":
     CLERK_FRONTEND_API = settings.CLERK_DEV_FRONTEND_API
 
+# The origins allowed to hold a token, kept in step with the CORS list in
+# app/main.py. Clerk stamps the asking origin onto the token as "azp".
+ALLOWED_PARTIES = {
+    "http://localhost:5173",
+    "https://clippper.vercel.app",
+    "https://clippper.fyi",
+    "https://www.clippper.fyi",
+}
+
+# Clerk tokens live about 60 seconds, so a slightly fast client clock is enough
+# to make a fresh token look expired.
+LEEWAY_SECONDS = 30
+
 # cache the keys in memory
 _jwks_cache = None
 
@@ -55,7 +68,7 @@ async def get_current_user(request: Request) -> str:
             detail="Missing authorization header"
         )
     
-    token = auth_header.replace("Bearer ", "")
+    token = auth_header.removeprefix("Bearer ").strip()
 
     try:
         jwks = await get_jwks()
@@ -73,12 +86,25 @@ async def get_current_user(request: Request) -> str:
                 detail="Invalid token key"
             )
 
+        # Clerk session tokens carry an "aud" claim we have nothing to match
+        # against, and PyJWT rejects a token whose aud we do not name. Clerk's
+        # own guidance is to check "azp" (the origin that asked for the token)
+        # instead, which is what happens below.
         payload = jwt.decode(
             token,
             public_key,
             algorithms=["RS256"],
-            options={"verify_exp": True}
+            options={"verify_exp": True, "verify_aud": False},
+            leeway=LEEWAY_SECONDS,
         )
+
+        authorized_party = payload.get("azp")
+        if authorized_party and authorized_party not in ALLOWED_PARTIES:
+            print(f"🚫 Token came from an unlisted origin: {authorized_party}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
 
         return payload["sub"]
 
@@ -87,7 +113,9 @@ async def get_current_user(request: Request) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token expired"
         )
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as error:
+        # Without this the reason is lost and every rejection looks the same.
+        print(f"🚫 Token rejected: {type(error).__name__}: {error}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"

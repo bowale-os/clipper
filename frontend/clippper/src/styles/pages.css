@@ -376,6 +376,18 @@
   color: var(--ash);
 }
 
+/* ============ Sign in / sign up as their own page ============ */
+
+/* Clerk lands here when a protected route turns you away, and for any sign-in
+   step that needs its own address. */
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: clamp(24px, 5vw, 64px);
+  background: var(--cream);
+}
+
 /* ============ Clerk overrides ============ */
 
 body .cl-modalContent,

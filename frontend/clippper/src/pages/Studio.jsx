@@ -137,7 +137,7 @@ function Studio() {
   }, [workingVideos.length, refresh])
 
   const handleRender = useCallback(
-    ({ moment, format, autoDownload = false }) => {
+    ({ moment, format, captions, autoDownload = false }) => {
       // No shape asked for means "just give me this clip". If one is already
       // rendered we hand that one over, even if it came out a different shape
       // than the preference, rather than quietly paying to render it again. The
@@ -147,7 +147,12 @@ function Studio() {
 
       start({
         autoDownload,
-        captions: settled && !format ? existing.captions : prefs.captions,
+        captions:
+          typeof captions === 'boolean'
+            ? captions
+            : settled && !format
+              ? existing.captions
+              : prefs.captions,
         format: format || (settled ? existing.format : prefs.format),
         moment,
         videoId: activeVideoId,
@@ -264,7 +269,7 @@ function Studio() {
                         <span />
                       </div>
                     </div>
-                    <LiveStatus status={video.status} />
+                    <LiveStatus status={video.retrying ? 'waiting' : video.status} />
                     <DeleteVideo
                       error={remove.error}
                       filename={video.filename}
@@ -397,6 +402,7 @@ function Studio() {
 
       {openMoment ? (
         <ClipPreview
+          captions={prefs.captions}
           format={prefs.format}
           moment={openMoment}
           onClose={() => setOpenMoment(null)}
