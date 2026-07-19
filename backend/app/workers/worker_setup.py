@@ -32,7 +32,11 @@ QUEUES = [cpu_queue, io_queue]
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logger.info("Starting %s on queues: %s", WorkerClass.__name__, ", ".join(q.name for q in QUEUES))
-    WorkerClass(QUEUES, connection=redis_conn).work()
+    # with_scheduler is required, not optional: jobs enqueued with JOB_RETRY back off by
+    # an interval, and RQ parks those in the ScheduledJobRegistry. Without a scheduler
+    # nothing ever moves them back onto a queue, so a failed job would vanish instead of
+    # retrying — quieter and worse than no retry at all.
+    WorkerClass(QUEUES, connection=redis_conn).work(with_scheduler=True)
 
 
 if __name__ == "__main__":

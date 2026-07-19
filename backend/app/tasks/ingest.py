@@ -134,22 +134,18 @@ def _thumb_sprite(video_path: str, out_path: str, duration_sec: float) -> None:
     )
 
 
-@job_contract("ingest")
+@job_contract("ingest", skip_if=_ingest_done)
 def ingest(ctx: TaskContext) -> None:
     video = ctx.video
 
-    # Idempotency: duration_sec is ingest's final artifact. If it's set, we've run.
-    if _ingest_done(ctx):
-        return
-
-    video.pipeline = {**(video.pipeline or {}), "stage": "ingest", "progress_pct": 0}
-    video.status = VideoStatus.processing
-    # Commit each checkpoint as we go — ffmpeg steps run long with no DB activity in
-    # between, and a connection idle that long gets dropped by Neon's autosuspend (see
-    # backend/app/workers/contract.py for how the pipeline's final commit is gated).
-    # Committing periodically keeps the connection alive and releases the row lock
-    # between steps instead of holding it for the whole task.
-    ctx.db.commit()
+    # Each ctx.progress() below is its own short transaction, so the long ffmpeg steps in
+    # between hold no connection. This is NOT about Neon autosuspend, as an earlier
+    # comment here claimed: Postgres terminates any session left idle *inside a
+    # transaction* for idle_in_transaction_session_timeout, 5min on this database
+    # (idle_session_timeout is 0, so a committed, pooled connection is never reaped).
+    # Verified 2026-07-18 after detect died this way mid-Gemini-call.
+    ctx.progress(stage="ingest", pct=0)
+    ctx.set_status(VideoStatus.processing)
 
     from app.services.r2_client import download_file, upload_bytes, upload_file
 
@@ -172,29 +168,25 @@ def ingest(ctx: TaskContext) -> None:
         download_file(video.r2_key, video_path)
         probed_size = os.path.getsize(video_path)
         duration = _ffprobe_duration(video_path)
-        video.pipeline = {**video.pipeline, "progress_pct": 20}
-        ctx.db.commit()
+        ctx.progress(pct=20)
         logger.info("ingest %s: downloaded source (%d bytes, %.1fs)", video.id, probed_size, duration)
 
         # audio.ogg — the only full read of the source; everything else is cheap.
         _extract_audio(video_path, audio_path)
         upload_file(audio_path, audio_key)
-        video.pipeline = {**video.pipeline, "progress_pct": 50}
-        ctx.db.commit()
+        ctx.progress(pct=50)
         logger.info("ingest %s: audio extracted + uploaded", video.id)
 
         # features.json — energy + silence timeline (drives detect's markers & snapping).
         features = {"rms": _rms_timeline(audio_path), "silences": _detect_silences(audio_path)}
         upload_bytes(json.dumps(features).encode("utf-8"), features_key, "application/json")
-        video.pipeline = {**video.pipeline, "progress_pct": 70}
-        ctx.db.commit()
+        ctx.progress(pct=70)
         logger.info("ingest %s: features computed (silences=%d)", video.id, len(features["silences"]))
 
         # keyframes.json — seek math for later render/preview.
         keyframes = _keyframes(video_path)
         upload_bytes(json.dumps(keyframes).encode("utf-8"), keyframes_key, "application/json")
-        video.pipeline = {**video.pipeline, "progress_pct": 85}
-        ctx.db.commit()
+        ctx.progress(pct=85)
         logger.info("ingest %s: keyframes computed (%d)", video.id, len(keyframes))
 
         # thumbs.jpg — scrubber sprite for the review UI.
@@ -204,15 +196,16 @@ def ingest(ctx: TaskContext) -> None:
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    video.artifacts = {
-        **(video.artifacts or {}),
-        "audio_key": audio_key,
-        "features_key": features_key,
-        "keyframes_key": keyframes_key,
-        "thumbs_key": thumbs_key,
-    }
-    video.duration_sec = duration
-    video.pipeline = {**video.pipeline, "progress_pct": 100}
+    ctx.set_artifacts(
+        audio_key=audio_key,
+        features_key=features_key,
+        keyframes_key=keyframes_key,
+        thumbs_key=thumbs_key,
+    )
+    # duration_sec is what _ingest_done checks, so it must land after the artifacts —
+    # otherwise a crash in between would let a retry skip a video with no audio_key.
+    ctx.update_video(duration_sec=duration)
+    ctx.progress(pct=100)
 
     ctx.metrics.update({
         "duration_sec": duration,

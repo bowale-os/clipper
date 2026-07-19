@@ -1,5 +1,4 @@
-/* Shared formatters. These were duplicated across Videos, Moments, ClipEditor
-   and VideoUploadCard; they live here so every screen reads the same way. */
+/* Shared formatters. They live here so every screen reads the same way. */
 
 export function formatBytes(bytes) {
   if (!bytes) {
@@ -27,6 +26,26 @@ export function formatClock(totalSeconds, { includeHours = false } = {}) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
+/**
+ * Reads the timecodes people actually type: "90", "1:30", or "01:02:30".
+ * Returns NaN for anything it can't make sense of, so callers can validate.
+ */
+export function parseTimecode(value) {
+  const raw = String(value ?? '').trim()
+
+  if (!raw) {
+    return Number.NaN
+  }
+
+  const parts = raw.split(':')
+
+  if (parts.length > 3 || parts.some((part) => part === '' || !/^\d*\.?\d*$/.test(part))) {
+    return Number.NaN
+  }
+
+  return parts.reduce((total, part) => total * 60 + Number(part), 0)
+}
+
 export function formatDate(value) {
   if (!value) {
     return 'No date'
@@ -39,6 +58,12 @@ export function formatDate(value) {
   }
 
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+// The detector scores 0..1 (see backend/app/tasks/detect.py); people read /100.
+export function toScore(value) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? Math.round(numeric * 100) : null
 }
 
 export function getVideoId(video) {

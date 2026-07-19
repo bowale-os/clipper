@@ -12,7 +12,7 @@ from app.dependencies.user import get_current_user_record
 from app.api.common import get_owned_video
 from app.db.session import get_db
 from app.tasks.render import FORMATS, DEFAULT_FORMAT
-from app.workers.queues import cpu_queue
+from app.workers.queues import JOB_RETRY, cpu_queue
 from app.services.r2_client import generate_download_url
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,9 @@ def create_clip(
 
     db.add(clip)
     db.commit()
-    cpu_queue.enqueue("app.tasks.render.render", str(video.id), {"clip_id": str(clip.id)})
+    cpu_queue.enqueue(
+        "app.tasks.render.render", str(video.id), {"clip_id": str(clip.id)}, retry=JOB_RETRY
+    )
 
     return {
         "clip_id": str(clip.id),

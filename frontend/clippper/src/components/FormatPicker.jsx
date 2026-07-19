@@ -8,7 +8,7 @@ const platformHints = {
 
 function FormatPicker({ value, onChange, disabled = false }) {
   return (
-    <div className="segmented" role="group" aria-label="Clip format">
+    <div className="segmented" role="group" aria-label="Clip shape">
       {CLIP_FORMATS.map((format) => (
         <button
           aria-pressed={value === format}

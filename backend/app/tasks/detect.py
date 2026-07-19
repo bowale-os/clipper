@@ -1,6 +1,6 @@
 import json
 import statistics
-from sqlalchemy import select
+from sqlalchemy import select, update
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -102,28 +102,48 @@ def _parse_ts(ts) -> float:
 
 
 def _detect_done(ctx):
-    stmt = select(RankingRun).where(RankingRun.video_id == ctx.video.id)
-    return ctx.db.execute(stmt).scalar_one_or_none() is not None
+    """Only a *completed* run counts as done.
+
+    The run row is committed as status="running" before the Gemini call (so the task
+    holds no transaction across it), which means a failed attempt leaves a row behind.
+    Checking for mere existence would make a retry skip detect and report success on a
+    video that has no moments at all.
+    """
+    stmt = select(RankingRun).where(
+        RankingRun.video_id == ctx.video.id,
+        RankingRun.status == "done",
+    )
+    with ctx.tx() as db:
+        return db.execute(stmt).scalars().first() is not None
 
 
 def _load_inputs(ctx):
     video = ctx.video
 
-    transcript = ctx.db.execute(
-        select(Transcript).where(Transcript.video_id == video.id)
-    ).scalar_one_or_none()
+    # Read the row, then close the transaction before the R2 downloads below: they are
+    # network IO and must not run inside a transaction.
+    with ctx.tx() as db:
+        transcript = db.execute(
+            select(Transcript).where(Transcript.video_id == video.id)
+        ).scalar_one_or_none()
 
-    if transcript is None:
-        raise RuntimeError(f"No transcript for video {video.id}; transcribe must run first")
+        if transcript is None:
+            raise RuntimeError(f"No transcript for video {video.id}; transcribe must run first")
 
-    words = json.loads(download_bytes(transcript.words_r2_key))          # [{word,start,end}, ...]
+        words_r2_key = transcript.words_r2_key
+        segments = transcript.segments
+
+    words = json.loads(download_bytes(words_r2_key))                     # [{word,start,end}, ...]
 
     features = {"rms": [], "silences": []}                               # defensive default
     features_key = (video.artifacts or {}).get("features_key")
     if features_key:
         features = json.loads(download_bytes(features_key))              # {rms:[...], silences:[...]}
 
-    return transcript, words, features
+    # Return segments rather than the Transcript row: it is detached once the block above
+    # closes, and handing back a live-looking ORM object invites a lazy load that would
+    # fail with no session to load from.
+    return segments, words, features
 
 
 def _loud_spikes(rms):
@@ -237,7 +257,7 @@ def _snap_moment(raw_start, raw_end, boundaries, silences, video_end=None):
     return raw_start, raw_end   # nothing snapped stayed in bounds; keep the citation
 
 
-def _queue_auto_renders(ctx: TaskContext, moments: list[Moment]) -> list[Clip]:
+def _queue_auto_renders(ctx: TaskContext, db, moments: list[Moment]) -> list[Clip]:
     """Create queued Clip rows for the strongest moments and schedule their renders.
 
     The Clip row is written here rather than by the render job so the frontend can list
@@ -246,6 +266,10 @@ def _queue_auto_renders(ctx: TaskContext, moments: list[Moment]) -> list[Clip]:
 
     Ordering is by the blended `final` score, so the clips that fill the screen first are
     the ones most worth watching.
+
+    Takes the caller's session: the clips belong in the same transaction as the moments
+    they point at, so a crash cannot leave clips referencing moments that were never
+    written.
     """
     ranked = sorted(moments, key=lambda m: m.scores["final"], reverse=True)
 
@@ -266,10 +290,10 @@ def _queue_auto_renders(ctx: TaskContext, moments: list[Moment]) -> list[Clip]:
                 "captions": AUTO_RENDER_CAPTIONS,
             },
         )
-        ctx.db.add(clip)
+        db.add(clip)
         clips.append(clip)
 
-    ctx.db.flush()   # mint the clip ids the render jobs are keyed on
+    db.flush()   # mint the clip ids the render jobs are keyed on
 
     for clip in clips:
         # Deferred until detect's transaction commits — see TaskContext.enqueue_next.
@@ -284,32 +308,34 @@ def _queue_auto_renders(ctx: TaskContext, moments: list[Moment]) -> list[Clip]:
     return clips
 
 
-@job_contract("detect")
+@job_contract("detect", skip_if=_detect_done)
 def detect(ctx: TaskContext) -> None:
-    if _detect_done(ctx):
-        return
-    
-    transcript, words, features = _load_inputs(ctx)
-    segments = transcript.segments
+    segments, words, features = _load_inputs(ctx)
     boundaries = _sentence_boundaries(words)
     silences = features.get("silences", [])
 
     prompt_inject = _build_annotated(segments=segments, features=features)
-    run = RankingRun(
-        video_id=ctx.video.id,
-        params={"max_moments": MAX_MOMENTS, "min_len": MIN_LEN, "max_len": MAX_LEN,
-                "core_min": CORE_MIN, "core_max": CORE_MAX, "cushion": CUSHION,
-                "sent_gap": SENT_GAP, "loud_db_over_median": LOUD_DB_OVER_MEDIAN},
-        prompt_version=PROMPT_VERSION,
-        model=GEMINI_MODEL,
-        status="running",
-        est_cost_usd=None,   # fill in after the Gemini call
+
+    # The run row is committed here, before the Gemini call, so the task holds no
+    # transaction across it — Postgres reaps sessions idle inside a transaction after 5
+    # minutes, which is how this job died on 2026-07-18. run_id is what everything below
+    # uses: no ORM object outlives this block.
+    with ctx.tx() as db:
+        run = RankingRun(
+            video_id=ctx.video.id,
+            params={"max_moments": MAX_MOMENTS, "min_len": MIN_LEN, "max_len": MAX_LEN,
+                    "core_min": CORE_MIN, "core_max": CORE_MAX, "cushion": CUSHION,
+                    "sent_gap": SENT_GAP, "loud_db_over_median": LOUD_DB_OVER_MEDIAN},
+            prompt_version=PROMPT_VERSION,
+            model=GEMINI_MODEL,
+            status="running",
+            est_cost_usd=None,   # filled in after the Gemini call
         )
-    ctx.db.add(run)
-    ctx.db.flush()   
+        db.add(run)
+        db.flush()
+        run_id = run.id
 
-    ctx.video.pipeline = {**(ctx.video.pipeline or {}), "stage": "detect", "progress_pct": 30}
-
+    ctx.progress(stage="detect", pct=30)
 
     try:
         response = client.models.generate_content(
@@ -337,41 +363,48 @@ def detect(ctx: TaskContext) -> None:
         est_cost = round(in_tok / 1_000_000 * GEMINI_IN_PER_MTOK
                     + out_tok / 1_000_000 * GEMINI_OUT_PER_MTOK, 6)
 
-        run.est_cost_usd = est_cost
-        run.status = "done"
-
-        # Turn candidates into Moment rows. Timestamps come back as the h:mm:ss strings
-        # the model cited, so parse them back to seconds. Anything outside the duration
-        # window is dropped here — the returned/kept gap is a signal we record in metrics.
-        kept: list[Moment] = []
-        for m in candidates:
-            raw_start, raw_end = _parse_ts(m.start), _parse_ts(m.end)
-            dur = raw_end - raw_start
-            if dur < CORE_MIN or dur > CORE_MAX:
-                continue
-            start_sec, end_sec = _snap_moment(
-                raw_start, raw_end, boundaries, silences, ctx.video.duration_sec
+        # One transaction for everything the run produces: marking the run done, the
+        # Moment rows, and the Clip rows that point at them. All of it or none of it —
+        # a partial write would leave the API serving half a set of moments, since it
+        # reads them by video_id with no notion of which run they came from.
+        with ctx.tx() as db:
+            db.execute(
+                update(RankingRun)
+                .where(RankingRun.id == run_id)
+                .values(status="done", est_cost_usd=est_cost)
             )
-            final = 0.4 * m.hook + 0.3 * m.shareability + 0.2 * m.completeness + 0.1 * m.visual
-            moment = Moment(
-                video_id=ctx.video.id,
-                run_id=run.id,
-                start_sec=start_sec, end_sec=end_sec,
-                raw_start_sec=raw_start, raw_end_sec=raw_end,
-                scores={"hook": m.hook, "completeness": m.completeness,
-                        "shareability": m.shareability, "visual": m.visual,
-                        "final": round(final, 3)},
-                type=m.type, title=m.title, reason=m.reason,
-                transcript_excerpt=m.transcript_excerpt,
-            )
-            ctx.db.add(moment)
-            kept.append(moment)
 
-        ctx.db.flush()   # mint the moment ids the clips point back to
-        clips = _queue_auto_renders(ctx, kept)
+            # Turn candidates into Moment rows. Timestamps come back as the h:mm:ss strings
+            # the model cited, so parse them back to seconds. Anything outside the duration
+            # window is dropped here — the returned/kept gap is a signal we record in metrics.
+            kept: list[Moment] = []
+            for m in candidates:
+                raw_start, raw_end = _parse_ts(m.start), _parse_ts(m.end)
+                dur = raw_end - raw_start
+                if dur < CORE_MIN or dur > CORE_MAX:
+                    continue
+                start_sec, end_sec = _snap_moment(
+                    raw_start, raw_end, boundaries, silences, ctx.video.duration_sec
+                )
+                final = 0.4 * m.hook + 0.3 * m.shareability + 0.2 * m.completeness + 0.1 * m.visual
+                moment = Moment(
+                    video_id=ctx.video.id,
+                    run_id=run_id,
+                    start_sec=start_sec, end_sec=end_sec,
+                    raw_start_sec=raw_start, raw_end_sec=raw_end,
+                    scores={"hook": m.hook, "completeness": m.completeness,
+                            "shareability": m.shareability, "visual": m.visual,
+                            "final": round(final, 3)},
+                    type=m.type, title=m.title, reason=m.reason,
+                    transcript_excerpt=m.transcript_excerpt,
+                )
+                db.add(moment)
+                kept.append(moment)
 
-        ctx.video.pipeline = {**(ctx.video.pipeline or {}), "stage": "detect", "progress_pct": 80}
+            db.flush()   # mint the moment ids the clips point back to
+            clips = _queue_auto_renders(ctx, db, kept)
 
+        ctx.progress(pct=80)
 
         ctx.metrics.update({
             "model": GEMINI_MODEL,
@@ -384,15 +417,18 @@ def detect(ctx: TaskContext) -> None:
             "est_cost_usd": est_cost,
         })
 
-    except Exception as e:
-        from app.db.session import session_scope
-        run.status = "error"
-        with session_scope() as s2:
-            s2.merge(run)      # run is detached; merge re-inserts it with status="error"
+    except Exception:
+        # The run row is already committed, so this is a plain UPDATE by id rather than
+        # the re-insert this used to need. Deliberately touches no ORM object: a lazy
+        # load here would raise and bury the real error (a Gemini 503, usually).
+        with ctx.tx() as db:
+            db.execute(
+                update(RankingRun).where(RankingRun.id == run_id).values(status="error")
+            )
         raise
 
-    ctx.video.status = VideoStatus.ready
-    ctx.video.pipeline = {**(ctx.video.pipeline or {}), "stage": "detect", "progress_pct": 100}
+    ctx.set_status(VideoStatus.ready)
+    ctx.progress(stage="detect", pct=100)
 
 
 

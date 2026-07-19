@@ -8,7 +8,7 @@ function ProtectedRoute({ children }) {
   }
 
   if (!isSignedIn) {
-    return <RedirectToSignIn forceRedirectUrl="/dashboard" />
+    return <RedirectToSignIn forceRedirectUrl="/" />
   }
 
   return children

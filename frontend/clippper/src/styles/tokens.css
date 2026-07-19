@@ -1,9 +1,10 @@
 /* ============================================================
-   Clippper design tokens — see docs/DESIGN.md
+   Clippper design tokens
 
-   Every component styles against SEMANTIC tokens only
-   (--surface-1, --text-body, --accent...). The two themes below
-   are the only place raw hex values are allowed.
+   One visual world: cream paper, black ink, one fuchsia. This
+   design deliberately does not invert for dark mode — the
+   cream/void contrast IS the brand, so there is a single theme
+   and no [data-theme] switch.
 
    House rules baked into these tokens:
    no gradients, no glows, no blur, no shadow stacks.
@@ -11,19 +12,50 @@
    ============================================================ */
 
 :root {
+  color-scheme: light;
+
+  /* ---- Paper and ink ---- */
+  --cream: #ffedd2;
+  --cream-2: #f7e3c4;
+  --cream-line: #e4d3b6;
+  --void: #0d0d0d;
+  --white: #ffffff;
+  --ash: #57534b;
+
+  /* One bright fuchsia, two steps. The deep step is the only one
+     allowed under white text — it clears AA, the bright one doesn't. */
+  --fuchsia: #f5288b;
+  --fuchsia-deep: #e01c74;
+
+  /* ---- Semantic ---- */
+  --canvas: var(--cream);
+  --surface: var(--cream-2);
+  --surface-raised: var(--white);
+  --border: var(--cream-line);
+  --border-strong: #c9b48f;
+
+  --text-heading: var(--void);
+  --text-body-color: var(--void);
+  --text-muted: var(--ash);
+
+  --accent: var(--fuchsia);
+  --accent-strong: var(--fuchsia-deep);
+  --on-accent: var(--white);
+
+  --state-bad: #c02626;
+  --skeleton: #f2ddbc;
+
   /* ---- Type ---- */
-  --font-sans:
-    'Plus Jakarta Sans', ui-sans-serif, system-ui, -apple-system,
-    BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-sans: 'Poppins', 'Nunito Sans', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
   --font-mono: ui-monospace, 'Cascadia Code', SFMono-Regular, Consolas, monospace;
 
-  --text-display: 3.5rem;
-  --text-h1: 2.25rem;
-  --text-h2: 1.5rem;
-  --text-h3: 1.125rem;
-  --text-body: 1rem;
-  --text-sm: 0.875rem;
-  --text-xs: 0.75rem;
+  --text-display: clamp(30px, 5vw, 50px);
+  --text-h1: clamp(24px, 3.4vw, 34px);
+  --text-h2: 1.375rem;
+  --text-h3: 1.0625rem;
+  --text-body: 0.9375rem;
+  --text-sm: 0.8125rem;
+  --text-xs: 0.6875rem;
 
   /* ---- Space (4px base) ---- */
   --space-1: 4px;
@@ -39,76 +71,14 @@
   --space-20: 80px;
 
   /* ---- Shape ---- */
-  --radius-frame: 40px;
-  --radius-card: 24px;
-  --radius-row: 16px;
-  --radius-input: 12px;
+  --radius-card: 10px;
+  --radius-row: 10px;
+  --radius-input: 8px;
   --radius-control: 8px;
+  --radius-chip: 6px;
   --radius-pill: 200px;
 
   /* ---- Layout ---- */
-  --sidebar-width: 248px;
-  --content-max: 1160px;
+  --content-max: 1080px;
   --hairline: 1px;
-}
-
-/* ============ Dark theme (default) ============ */
-
-:root,
-:root[data-theme='dark'] {
-  color-scheme: dark;
-
-  --canvas: #0d0c12;
-  --surface-1: #17151f;
-  --surface-2: #211e2c;
-  --surface-hover: #262232;
-
-  --border: #2b2837;
-  --border-strong: #3d3950;
-
-  --text-heading: #f6f5fa;
-  --text-body-color: #d5d2df;
-  --text-muted: #8b8799;
-
-  --accent: #7c5cff;
-  --accent-hover: #8f74ff;
-  --accent-quiet: #241d47;
-  --on-accent: #ffffff;
-
-  --state-motion: #2ed6ff;
-  --state-good: #a2ea13;
-  --state-bad: #ff5f70;
-  --state-feature: #f843c2;
-
-  --skeleton: #201d2b;
-}
-
-/* ============ Light theme ============ */
-
-:root[data-theme='light'] {
-  color-scheme: light;
-
-  --canvas: #ffffff;
-  --surface-1: #ffffff;
-  --surface-2: #f4f4f2;
-  --surface-hover: #eeeeee;
-
-  --border: #e0e0db;
-  --border-strong: #c9c9c2;
-
-  --text-heading: #21164c;
-  --text-body-color: #353241;
-  --text-muted: #5f5f69;
-
-  --accent: #592eff;
-  --accent-hover: #4a22e0;
-  --accent-quiet: #f0ecff;
-  --on-accent: #ffffff;
-
-  --state-motion: #0090b8;
-  --state-good: #4b7a00;
-  --state-bad: #d2384a;
-  --state-feature: #b81a8a;
-
-  --skeleton: #eeeeee;
 }
