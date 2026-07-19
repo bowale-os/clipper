@@ -138,7 +138,8 @@ class Job(Base):
     )
     clip_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("clips.id"))
     type: Mapped[str] = mapped_column(String, nullable=False)  # ingest|transcribe|detect|verify|render
-    status: Mapped[str] = mapped_column(String, default="queued", nullable=False)  # queued|running|done|error
+    # cancelled: the video or clip this job was for was deleted before it could run.
+    status: Mapped[str] = mapped_column(String, default="queued", nullable=False)  # queued|running|done|error|cancelled
     attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     rq_job_id: Mapped[str | None] = mapped_column(String)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
