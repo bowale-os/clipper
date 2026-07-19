@@ -390,19 +390,51 @@
 
 /* ============ Clerk overrides ============ */
 
-body .cl-modalContent,
-body .cl-cardBox {
+/* Sign in and sign up are single-column, so they stay narrow. Anything wider
+   here squashes the account modal, which needs room for its side nav. */
+body .cl-signIn-root .cl-cardBox,
+body .cl-signUp-root .cl-cardBox,
+body .cl-userButton-root .cl-cardBox {
   width: min(96vw, 460px);
   max-width: 460px;
 }
 
-body .cl-card {
+body .cl-signIn-root .cl-card,
+body .cl-signUp-root .cl-card,
+body .cl-userButton-root .cl-card {
   width: 100%;
   padding: 2.5rem;
+}
+
+/* Manage account: side nav plus a content panel. Below the breakpoint Clerk
+   drops to one column on its own, so we just hand it the viewport. */
+body .cl-modalContent:has(.cl-userProfile-root) {
+  width: min(96vw, 880px);
+  max-width: 880px;
+}
+
+body .cl-userProfile-root .cl-cardBox,
+body .cl-userProfile-root .cl-card {
+  width: 100%;
+  max-width: none;
+}
+
+/* Long panels (connected accounts, sessions) were running past the bottom of
+   the screen with nowhere to scroll. */
+body .cl-modalContent {
+  max-height: 90vh;
+}
+
+body .cl-userProfile-root .cl-scrollBox {
+  overflow-y: auto;
 }
 
 @media (max-width: 768px) {
   body .cl-card {
     padding: 1.5rem;
+  }
+
+  body .cl-modalContent:has(.cl-userProfile-root) {
+    width: 96vw;
   }
 }
