@@ -6,7 +6,7 @@ import tempfile
 import time
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.db.models import Clip
@@ -38,8 +38,8 @@ CAPTION_STYLE = (
 SRT_FILENAME = "captions.srt"
 
 
-def _load_clip(ctx: TaskContext) -> Clip:
-    """Load the Clip this job renders.
+def _load_clip(ctx: TaskContext, db) -> Clip:
+    """Load the Clip this job renders, in the caller's transaction.
 
     The contract keys jobs on video_id, but render works on one clip, so create_clip
     passes the target through params.
@@ -47,7 +47,7 @@ def _load_clip(ctx: TaskContext) -> Clip:
     clip_id = ctx.params.get("clip_id")
     if not clip_id:
         raise RuntimeError("render requires params['clip_id']")
-    clip = ctx.db.get(Clip, uuid.UUID(clip_id))
+    clip = db.get(Clip, uuid.UUID(clip_id))
     if clip is None:
         raise RuntimeError(f"Clip {clip_id} not found")
     return clip
@@ -56,16 +56,18 @@ def _load_clip(ctx: TaskContext) -> Clip:
 def _render_done(ctx: TaskContext) -> bool:
     """Render's artifact is the file in R2, not the Clip row — create_clip already made
     that before this job was enqueued. A populated r2_key is the proof it rendered."""
-    clip = _load_clip(ctx)
-    return clip.status == "ready" and clip.r2_key is not None
+    with ctx.tx() as db:
+        clip = _load_clip(ctx, db)
+        return clip.status == "ready" and clip.r2_key is not None
 
 
 def _mark_clip_failed(session: Session, params: dict, err: Exception) -> None:
     """Record the clip as errored inside the contract's failure transaction.
 
-    Without this the clip would stay "queued" forever: the "rendering" write happens in
-    the task's session, which is rolled back on the way out, so the frontend would poll
-    a clip that never resolves.
+    Without this the clip would stay "rendering" forever and the frontend would poll a
+    clip that never resolves. render commits that "rendering" status before the encode,
+    so unlike the task's later writes it survives the rollback — which is exactly why it
+    needs an explicit tombstone rather than being undone for free.
     """
     clip_id = params.get("clip_id")
     if not clip_id:
@@ -260,22 +262,26 @@ def _cut(workdir: str, src_path: str, out_path: str, start: float, duration: flo
         raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {proc.stderr[-2000:]}")
 
 
-# lock_video=False: render only reads the video (r2_key, words_key) and writes its own
-# Clip row, so it has no reason to hold an exclusive lock across the whole encode.
-@job_contract("render", fail_video=False, lock_video=False, on_failure=_mark_clip_failed)
+# render only reads the video (r2_key, words_key) and writes its own Clip row, so it
+# never needs the video lock — ctx.tx() takes one only when a helper asks for it.
+@job_contract(
+    "render", skip_if=_render_done, fail_video=False, on_failure=_mark_clip_failed
+)
 def render(ctx: TaskContext) -> None:
-    if _render_done(ctx):
-        return
+    # Claim the clip and read what the encode needs, in one short transaction. Everything
+    # after this block is download/ffmpeg/upload, which must hold no transaction.
+    with ctx.tx() as db:
+        clip = _load_clip(ctx, db)
+        clip_id = clip.id
+        params = clip.params or {}
 
-    clip = _load_clip(ctx)
-    clip.status = "rendering"
+        start = float(params["start"])
+        end = float(params["end"])
+        duration = end - start
+        if duration <= 0:
+            raise RuntimeError(f"Clip {clip_id} has a non-positive duration ({start} -> {end})")
 
-    params = clip.params or {}
-    start = float(params["start"])
-    end = float(params["end"])
-    duration = end - start
-    if duration <= 0:
-        raise RuntimeError(f"Clip {clip.id} has a non-positive duration ({start} -> {end})")
+        clip.status = "rendering"
 
     fmt = params.get("format", DEFAULT_FORMAT)
 
@@ -298,16 +304,18 @@ def render(ctx: TaskContext) -> None:
         _cut(workdir, src_path, out_path, start, duration, vf)
 
         out_bytes = os.path.getsize(out_path)
-        out_key = f"clips/{clip.id}.mp4"
+        out_key = f"clips/{clip_id}.mp4"
         upload_file(out_path, out_key)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    clip.r2_key = out_key
-    clip.status = "ready"
+    with ctx.tx() as db:
+        db.execute(
+            update(Clip).where(Clip.id == clip_id).values(r2_key=out_key, status="ready")
+        )
 
     ctx.metrics.update({
-        "clip_id": str(clip.id),
+        "clip_id": str(clip_id),
         "format": fmt,
         "captions": srt_path is not None,
         "duration_sec": round(duration, 3),

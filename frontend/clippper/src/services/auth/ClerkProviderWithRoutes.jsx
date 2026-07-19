@@ -1,6 +1,5 @@
 import { ClerkProvider } from '@clerk/react'
 import { BrowserRouter } from 'react-router-dom'
-import { useTheme } from '../../theme/themeContext'
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 
@@ -8,82 +7,52 @@ if (!PUBLISHABLE_KEY) {
   throw new Error('Clerk publishable key is missing.')
 }
 
-// Mirrors the semantic tokens in src/styles/tokens.css so Clerk's modals sit in
-// the same theme as the rest of the app.
-const themeVariables = {
-  dark: {
-    colorPrimary: '#7c5cff',
-    colorText: '#d5d2df',
-    colorTextSecondary: '#8b8799',
-    colorBackground: '#17151f',
-    colorInputBackground: '#211e2c',
-    colorInputText: '#f6f5fa',
-  },
-  light: {
-    colorPrimary: '#592eff',
-    colorText: '#353241',
-    colorTextSecondary: '#5f5f69',
-    colorBackground: '#ffffff',
+// Mirrors src/styles/tokens.css so Clerk's modals sit on the same cream paper as
+// the rest of the app. There is only one theme, so there is only one of these.
+const appearance = {
+  variables: {
+    colorPrimary: '#e01c74',
+    colorText: '#0d0d0d',
+    colorTextSecondary: '#57534b',
+    colorBackground: '#ffedd2',
     colorInputBackground: '#ffffff',
-    colorInputText: '#21164c',
+    colorInputText: '#0d0d0d',
+    colorDanger: '#c02626',
+    borderRadius: '8px',
+    fontFamily: "'Poppins', 'Nunito Sans', 'Segoe UI', system-ui, sans-serif",
   },
-}
-
-function buildAppearance(theme) {
-  return {
-    variables: {
-      ...themeVariables[theme],
-      borderRadius: '12px',
-      fontFamily: "'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif",
+  elements: {
+    modalBackdrop: {
+      backgroundColor: 'rgba(13, 13, 13, 0.5)',
     },
-    elements: {
-      modalBackdrop: {
-        backgroundColor: theme === 'dark' ? 'rgba(6, 5, 10, 0.72)' : 'rgba(33, 22, 76, 0.32)',
-      },
-      modalContent: {
-        width: 'min(96vw, 760px)',
-        maxWidth: '760px',
-      },
-      cardBox: {
-        width: '100%',
-        maxWidth: '760px',
-      },
-      card: {
-        width: '100%',
-        padding: '3rem',
-      },
-      headerTitle: {
-        fontSize: '2rem',
-      },
-      headerSubtitle: {
-        fontSize: '1rem',
-      },
-      formFieldInput: {
-        minHeight: '3rem',
-        fontSize: '1rem',
-      },
-      formButtonPrimary: {
-        minHeight: '3rem',
-        fontSize: '1rem',
-      },
+    card: {
+      border: '1px solid #e4d3b6',
+      boxShadow: 'none',
     },
-  }
+    formButtonPrimary: {
+      minHeight: '2.75rem',
+      fontSize: '0.9375rem',
+      fontWeight: 600,
+      boxShadow: 'none',
+    },
+    formFieldInput: {
+      minHeight: '2.75rem',
+      border: '1px solid #e4d3b6',
+    },
+  },
 }
 
 export default function ClerkProviderWithRoutes({ children }) {
-  const { theme } = useTheme()
-
   return (
     <ClerkProvider
       publishableKey={PUBLISHABLE_KEY}
-      appearance={buildAppearance(theme)}
-      signInForceRedirectUrl="/dashboard"
-      signUpForceRedirectUrl="/dashboard"
-      signInFallbackRedirectUrl="/dashboard"
-      signUpFallbackRedirectUrl="/dashboard"
+      appearance={appearance}
+      signInForceRedirectUrl="/"
+      signUpForceRedirectUrl="/"
+      signInFallbackRedirectUrl="/"
+      signUpFallbackRedirectUrl="/"
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      // Important: Add this for better React Router integration
       routerPush={(to) => (window.location.href = to)}
       routerReplace={(to) => window.location.replace(to)}
     >

@@ -24,7 +24,8 @@ OVERLAP_SEC = 5.0                   # each chunk re-transcribes this much of its
 def _transcribe_done(ctx: TaskContext) -> bool:
     # The Transcript row is transcribe's output artifact. If it exists, we've run.
     stmt = select(Transcript).where(Transcript.video_id == ctx.video.id)
-    return ctx.db.execute(stmt).scalar_one_or_none() is not None
+    with ctx.tx() as db:
+        return db.execute(stmt).scalars().first() is not None
 
 
 def _as_dicts(items) -> list[dict]:
@@ -94,16 +95,12 @@ def _transcribe_file(client, path: str, offset: float) -> tuple[list, list, str 
     return segments, words, getattr(resp, "language", None)
 
 
-@job_contract("transcribe")
+@job_contract("transcribe", skip_if=_transcribe_done)
 def transcribe(ctx: TaskContext) -> None:
     video = ctx.video
 
-    # Idempotency: bail if a transcript already exists for this video.
-    if _transcribe_done(ctx):
-        return
-
-    video.pipeline = {**(video.pipeline or {}), "stage": "transcribe", "progress_pct": 0}
-    video.status = VideoStatus.processing
+    ctx.progress(stage="transcribe", pct=0)
+    ctx.set_status(VideoStatus.processing)
 
     from app.services.r2_client import download_file, upload_bytes
     from groq import Groq
@@ -120,7 +117,7 @@ def transcribe(ctx: TaskContext) -> None:
             logger.error("transcribe %s: missing audio_key in artifacts: %r", video.id, video.artifacts)
             raise ValueError(f"Job artifacts missing 'audio_key' for video {video.id}")
         download_file(video.artifacts["audio_key"], audio_path)
-        video.pipeline = {**video.pipeline, "progress_pct": 40}
+        ctx.progress(pct=40)
 
         client = Groq(api_key=settings.GROQ_API_KEY)
         audio_bytes = os.path.getsize(audio_path)
@@ -149,7 +146,7 @@ def transcribe(ctx: TaskContext) -> None:
                 language = language or lang
                 logger.info("transcribe %s: chunk %d/%d done", video.id, i + 1, len(chunks))
 
-        video.pipeline = {**video.pipeline, "progress_pct": 85}
+        ctx.progress(pct=85)
         logger.info("transcribe %s: groq done (segments=%d, words=%d)", video.id, len(segments), len(words))
 
         # Segments (small) live inline in the DB; word-level timing (large) goes to R2.
@@ -158,20 +155,21 @@ def transcribe(ctx: TaskContext) -> None:
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    video.artifacts = {**(video.artifacts or {}), "words_key": words_key}
-    ctx.db.add(
-        Transcript(
-            video_id=video.id,
-            language=language,
-            provider="groq",
-            model=GROQ_MODEL,
-            segments=segments,
-            words_r2_key=words_key,
+    ctx.set_artifacts(words_key=words_key)
+    with ctx.tx() as db:
+        db.add(
+            Transcript(
+                video_id=video.id,
+                language=language,
+                provider="groq",
+                model=GROQ_MODEL,
+                segments=segments,
+                words_r2_key=words_key,
+            )
         )
-    )
 
     duration_sec = float(video.duration_sec) if video.duration_sec is not None else 0.0
-    video.pipeline = {**video.pipeline, "progress_pct": 100}
+    ctx.progress(pct=100)
     ctx.metrics.update({
         "segments": len(segments),
         "words": len(words),

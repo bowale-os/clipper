@@ -1,33 +1,34 @@
-import StatusPill from './StatusPill'
+import LiveStatus from './LiveStatus'
 import { DownloadIcon } from './icons'
 import { useClipStatus } from '../hooks/useClipStatus'
 import { formatClock } from '../lib/format'
 
 const waitCopy = {
-  queued: 'Your clip is in the queue — this usually takes under a minute.',
-  rendering: 'Rendering now. Cutting, cropping, and burning in captions.',
+  queued: 'In the queue. This usually takes under a minute.',
+  rendering: 'Making it now. Cutting, cropping, and burning the captions in.',
 }
 
 /**
- * A single queued render. Owns its own polling so several clips can render at
- * once without the page coordinating them.
+ * One queued manual cut. Owns its own polling so several can render at once
+ * without the page having to coordinate them.
  */
-function ClipRenderCard({ clipId, startSec, endSec, format, captions }) {
+function RenderRow({ captions, clipId, endSec, format, startSec }) {
   const { status, url, error } = useClipStatus(clipId)
 
   return (
-    <article className="clip-render">
-      <div className="clip-render-head">
+    <article className="render-row">
+      <div className="render-row-head">
         <div>
           <strong>
-            {formatClock(startSec)} – {formatClock(endSec)}
+            {formatClock(startSec, { includeHours: true })} to{' '}
+            {formatClock(endSec, { includeHours: true })}
           </strong>
           <p className="mono">
             {format}
             {captions ? ' · captions' : ''}
           </p>
         </div>
-        <StatusPill status={status} />
+        <LiveStatus status={status} />
       </div>
 
       {status === 'ready' && url ? (
@@ -43,8 +44,10 @@ function ClipRenderCard({ clipId, startSec, endSec, format, captions }) {
       ) : null}
 
       {status === 'queued' || status === 'rendering' ? (
-        <div className="clip-render-wait">
-          <span>{waitCopy[status]}</span>
+        <div>
+          <p className="muted" style={{ marginBottom: 'var(--space-3)', fontSize: 'var(--text-sm)' }}>
+            {waitCopy[status]}
+          </p>
           <div className="progress-track is-indeterminate">
             <span />
           </div>
@@ -56,4 +59,4 @@ function ClipRenderCard({ clipId, startSec, endSec, format, captions }) {
   )
 }
 
-export default ClipRenderCard
+export default RenderRow

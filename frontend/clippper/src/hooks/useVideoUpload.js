@@ -8,7 +8,6 @@ const initialUploadState = {
   progress: 0,
   result: null,
   status: 'idle',
-  contentType: 'default',
   resumeTarget: null,
 }
 
@@ -49,10 +48,7 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
 
   function selectFile(file) {
     setUploadState((current) => {
-      const kept = {
-        resumeTarget: current.resumeTarget,
-        contentType: current.contentType,
-      }
+      const kept = { resumeTarget: current.resumeTarget }
 
       if (!file) {
         return { ...initialUploadState, ...kept }
@@ -72,7 +68,7 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
         return {
           ...initialUploadState,
           ...kept,
-          error: `This doesn't look like the same file — its size doesn't match "${current.resumeTarget.filename}".`,
+          error: `This doesn't look like the same file. Its size doesn't match "${current.resumeTarget.filename}".`,
           status: 'error',
         }
       }
@@ -93,13 +89,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     })
   }
 
-  function setContentType(contentType) {
-    setUploadState((current) => ({
-      ...current,
-      contentType,
-    }))
-  }
-
   async function uploadSelectedFile() {
     if (!uploadState.file || isBusy) {
       return
@@ -118,7 +107,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
       }))
 
       const result = await uploadVideoFile({
-        contentType: uploadState.contentType,
         file: uploadState.file,
         getToken: getFreshToken,
         signal: controller.signal,
@@ -179,7 +167,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     setUploadState((current) => ({
       ...initialUploadState,
       resumeTarget: current.resumeTarget,
-      contentType: current.contentType,
     }))
 
     if (videoId && !isResume) {
@@ -197,7 +184,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     setUploadState((current) => ({
       ...initialUploadState,
       resumeTarget: current.resumeTarget,
-      contentType: current.contentType,
     }))
   }
 
@@ -207,7 +193,6 @@ export function useVideoUpload({ resumeTarget: initialResumeTarget = null } = {}
     cancelUpload,
     resetUpload,
     selectFile,
-    setContentType,
     startResume,
     uploadSelectedFile,
   }

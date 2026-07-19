@@ -203,14 +203,13 @@ export function uploadFileToSignedUrl({ file, uploadUrl, onProgress, signal }) {
   })
 }
 
-export async function completeVideoUpload({ contentType, videoId, parts, token, getToken }) {
+export async function completeVideoUpload({ videoId, parts, token, getToken }) {
   const data = await requestJson('/videos/complete', {
     method: 'POST',
     token,
     getToken,
     body: {
       video_id: videoId,
-      content_type: contentType,
       parts: parts || undefined,
     },
   })
@@ -304,7 +303,6 @@ export async function getClip({ clipId, token }) {
 }
 
 export async function uploadVideoFile({
-  contentType = 'default',
   file,
   token,
   getToken,
@@ -358,5 +356,5 @@ export async function uploadVideoFile({
   }
 
   onStepChange?.('completing')
-  return completeVideoUpload({ contentType, videoId, parts, getToken: tokenProvider })
+  return completeVideoUpload({ videoId, parts, getToken: tokenProvider })
 }

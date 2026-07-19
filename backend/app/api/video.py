@@ -23,7 +23,7 @@ from app.services.r2_client import (
     head_object_size,
     list_uploaded_parts,
 )
-from app.workers.queues import io_queue
+from app.workers.queues import JOB_RETRY, io_queue
 
 logger = logging.getLogger(__name__)
 
@@ -272,7 +272,7 @@ def complete_video_upload(
     db.commit()
 
     logger.info("Enqueuing ingest job for video %s on queue %s", video.id, io_queue.name)
-    job = io_queue.enqueue("app.tasks.ingest.ingest", str(video.id))
+    job = io_queue.enqueue("app.tasks.ingest.ingest", str(video.id), retry=JOB_RETRY)
     logger.info("Enqueued ingest job id=%s for video %s", job.id, video.id)
 
     # Every video runs the full ingest -> transcribe -> detect chain; each stage enqueues
