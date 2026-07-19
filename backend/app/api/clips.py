@@ -121,11 +121,15 @@ def list_clips(
         "clips": [
             {
                 "clip_id": str(clip.id),
+                # The grid keys its tiles on the moment, so without this it cannot tell
+                # which tile an already-rendered clip belongs to.
+                "moment_id": str(clip.moment_id) if clip.moment_id else None,
                 "status": clip.status,
                 "url": generate_download_url(clip.r2_key) if clip.status == "ready" else None,
                 "start": clip.params.get("start"),
                 "end": clip.params.get("end"),
                 "format": clip.params.get("format"),
+                "captions": clip.params.get("captions"),
                 "title": moment.title if moment else None,
                 "score": moment.scores.get("final") if moment else None,
             }

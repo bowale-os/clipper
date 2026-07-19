@@ -65,6 +65,9 @@ v_router = APIRouter()
 
 
 def _video_to_dict(video: Video) -> dict:
+    # video.pipeline also carries upload state (upload_id, part offsets), which is
+    # internal, so the stage fields are picked out by name rather than passed through.
+    pipeline = video.pipeline or {}
     return {
         "video_id": str(video.id),
         "filename": video.filename,
@@ -73,6 +76,9 @@ def _video_to_dict(video: Video) -> dict:
         "duration_sec": float(video.duration_sec) if video.duration_sec is not None else None,
         "content_type": video.content_type,
         "created_at": video.created_at.isoformat(),
+        "stage": pipeline.get("stage"),
+        "stage_pct": pipeline.get("progress_pct"),
+        "error": pipeline.get("error"),
     }
 
 
