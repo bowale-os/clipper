@@ -90,6 +90,64 @@ video {
   color: var(--white);
 }
 
+/* ============ Scrollbar ============ */
+/* The ash thumb is always visible, so the scrollbar never hides. Only
+   the track is quiet: transparent at rest, deep fuchsia once you are
+   inside a scrolling panel. Flat, no shadow, pill radius. */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ash) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ash);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--void);
+  background-clip: padding-box;
+}
+
+/* Reveal: hovering a scrolling panel paints its track. Excluded on the
+   root, where "hovered" just means the pointer is somewhere in the
+   window, which would leave the page track lit permanently. */
+
+*:hover {
+  scrollbar-color: var(--ash) var(--fuchsia-deep);
+}
+
+*:hover::-webkit-scrollbar-track,
+*:hover::-webkit-scrollbar-corner {
+  background: var(--fuchsia-deep);
+}
+
+html:hover,
+body:hover {
+  scrollbar-color: var(--ash) transparent;
+}
+
+html:hover::-webkit-scrollbar-track,
+body:hover::-webkit-scrollbar-track,
+html:hover::-webkit-scrollbar-corner,
+body:hover::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
