@@ -19,8 +19,8 @@ GEMINI_IN_PER_MTOK = 0.30
 GEMINI_OUT_PER_MTOK = 2.50
 PROMPT_VERSION = "detect-v2"
 MAX_MOMENTS=15
-MIN_LEN=60
-MAX_LEN=80
+MIN_LEN=20
+MAX_LEN=120
 SENT_GAP=0.6
 # Breathing room added on both sides of the substance the model picked. Clips that open
 # exactly on the first word and cut on the last one read as chopped, and the payoff never
