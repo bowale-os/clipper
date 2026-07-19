@@ -79,6 +79,9 @@ def _video_to_dict(video: Video) -> dict:
         "stage": pipeline.get("stage"),
         "stage_pct": pipeline.get("progress_pct"),
         "error": pipeline.get("error"),
+        # True while a stage is waiting out its backoff after a transient upstream
+        # failure. The video has not failed; it just will not move for a few minutes.
+        "retrying": bool(pipeline.get("retrying")),
     }
 
 

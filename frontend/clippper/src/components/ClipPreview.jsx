@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Poster from './Poster'
 import LiveStatus from './LiveStatus'
 import { CloseIcon, DownloadIcon } from './icons'
@@ -12,10 +12,10 @@ const scoreLabels = [
   ['visual', 'Visual'],
 ]
 
-const otherShapeCopy = {
-  '1:1': 'Make it square instead',
-  '16:9': 'Make it wide instead',
-  '9:16': 'Make it tall instead',
+const shapeCopy = {
+  '9:16': 'Tall',
+  '1:1': 'Square',
+  '16:9': 'Wide',
 }
 
 const waitCopy = {
@@ -29,8 +29,30 @@ const waitCopy = {
  * demand, because a moment is only worth paying to render once you have decided
  * you want it.
  */
-function ClipPreview({ format, moment, onClose, onRender, render }) {
+function ClipPreview({ captions, format, moment, onClose, onRender, render }) {
   const closeRef = useRef(null)
+  const activeFormat = render?.format || format
+  const activeCaptions = typeof render?.captions === 'boolean' ? render.captions : captions
+
+  // What the buttons below are asking for, which is not always what is on
+  // screen. Nothing renders until the one primary button is pressed, so picking
+  // a different shape never quietly costs a render.
+  const cutKey = `${activeFormat}|${activeCaptions}`
+  const [picked, setPicked] = useState({
+    captions: activeCaptions,
+    key: cutKey,
+    shape: activeFormat,
+  })
+
+  // A finished render becomes the new starting point for the picks.
+  if (picked.key !== cutKey) {
+    setPicked({ captions: activeCaptions, key: cutKey, shape: activeFormat })
+  }
+
+  const wantShape = picked.shape
+  const wantCaptions = picked.captions
+  const setWantShape = (shape) => setPicked((current) => ({ ...current, shape }))
+  const setWantCaptions = (value) => setPicked((current) => ({ ...current, captions: value }))
 
   useEffect(() => {
     closeRef.current?.focus()
@@ -48,9 +70,19 @@ function ClipPreview({ format, moment, onClose, onRender, render }) {
   const status = render?.status
   const isWorking = status === 'queued' || status === 'rendering' || status === 'processing'
   const isReady = status === 'ready' && render?.url
-  const activeFormat = render?.format || format
-  const otherShapes = CLIP_FORMATS.filter((shape) => shape !== activeFormat)
   const title = moment?.title || 'Untitled moment'
+  const shapeChanged = wantShape !== activeFormat
+  const captionsChanged = wantCaptions !== activeCaptions
+  const isSameCut = !shapeChanged && !captionsChanged
+
+  // Say back exactly what changed, so the button reads as the thing about to
+  // happen rather than a generic redo.
+  const redoCopy = [
+    shapeChanged ? `as ${shapeCopy[wantShape].toLowerCase()}` : '',
+    captionsChanged ? (wantCaptions ? 'with captions' : 'without captions') : '',
+  ]
+    .filter(Boolean)
+    .join(', ')
 
   return (
     <div
@@ -127,8 +159,49 @@ function ClipPreview({ format, moment, onClose, onRender, render }) {
 
           {render?.error ? <p className="message error">{render.error}</p> : null}
 
+          <div className="preview-options">
+            <div className="preview-option">
+              <span>Shape</span>
+              <div className="segmented" role="group" aria-label="Clip shape">
+                {CLIP_FORMATS.map((shape) => (
+                  <button
+                    aria-pressed={wantShape === shape}
+                    disabled={isWorking}
+                    key={shape}
+                    onClick={() => setWantShape(shape)}
+                    type="button"
+                  >
+                    {shapeCopy[shape]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="preview-option">
+              <span>Captions</span>
+              <div className="segmented" role="group" aria-label="Captions">
+                <button
+                  aria-pressed={wantCaptions}
+                  disabled={isWorking}
+                  onClick={() => setWantCaptions(true)}
+                  type="button"
+                >
+                  On
+                </button>
+                <button
+                  aria-pressed={!wantCaptions}
+                  disabled={isWorking}
+                  onClick={() => setWantCaptions(false)}
+                  type="button"
+                >
+                  Off
+                </button>
+              </div>
+            </div>
+          </div>
+
           <div className="preview-actions">
-            {isReady ? (
+            {isReady && isSameCut ? (
               <a className="button button-primary button-block" download href={render.url}>
                 <DownloadIcon size={16} />
                 Download
@@ -137,24 +210,14 @@ function ClipPreview({ format, moment, onClose, onRender, render }) {
               <button
                 className="button button-primary button-block"
                 disabled={isWorking}
-                onClick={() => onRender({ moment, format: activeFormat })}
+                onClick={() =>
+                  onRender({ moment, format: wantShape, captions: wantCaptions })
+                }
                 type="button"
               >
-                {isWorking ? 'Making it…' : 'Make this clip'}
+                {isWorking ? 'Making it…' : isReady ? `Make it ${redoCopy}` : 'Make this clip'}
               </button>
             )}
-
-            {otherShapes.map((shape) => (
-              <button
-                className="button button-quiet button-small button-block"
-                disabled={isWorking}
-                key={shape}
-                onClick={() => onRender({ moment, format: shape })}
-                type="button"
-              >
-                {otherShapeCopy[shape]}
-              </button>
-            ))}
           </div>
         </div>
       </div>

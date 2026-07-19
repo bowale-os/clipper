@@ -1,5 +1,5 @@
 import { ClerkProvider } from '@clerk/react'
-import { BrowserRouter } from 'react-router-dom'
+import { BrowserRouter, useNavigate } from 'react-router-dom'
 
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 
@@ -42,7 +42,13 @@ const appearance = {
   },
 }
 
-export default function ClerkProviderWithRoutes({ children }) {
+// Clerk steps through sign-in by navigating (password, email code, factor two).
+// Those hops have to go through the router, not the browser, or every step
+// reloads the page and takes the half-finished sign-in with it. useNavigate only
+// exists under a Router, which is why the Router is on the outside here.
+function ClerkWithRouter({ children }) {
+  const navigate = useNavigate()
+
   return (
     <ClerkProvider
       publishableKey={PUBLISHABLE_KEY}
@@ -53,10 +59,18 @@ export default function ClerkProviderWithRoutes({ children }) {
       signUpFallbackRedirectUrl="/"
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      routerPush={(to) => (window.location.href = to)}
-      routerReplace={(to) => window.location.replace(to)}
+      routerPush={(to) => navigate(to)}
+      routerReplace={(to) => navigate(to, { replace: true })}
     >
-      <BrowserRouter>{children}</BrowserRouter>
+      {children}
     </ClerkProvider>
+  )
+}
+
+export default function ClerkProviderWithRoutes({ children }) {
+  return (
+    <BrowserRouter>
+      <ClerkWithRouter>{children}</ClerkWithRouter>
+    </BrowserRouter>
   )
 }

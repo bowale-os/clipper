@@ -1,5 +1,5 @@
 import { Routes, Route } from 'react-router-dom'
-import { useAuth } from '@clerk/react'
+import { useAuth, SignIn, SignUp } from '@clerk/react'
 import ClerkProviderWithRoutes from './services/auth/ClerkProviderWithRoutes'
 import ProtectedRoute from './services/auth/ProtectedRoute'
 import SsoCallback from './services/auth/SsoCallback'
@@ -30,8 +30,22 @@ function App() {
       <Routes>
         <Route path="/" element={<Root />} />
         <Route path="/sso-callback" element={<SsoCallback />} />
-        <Route path="/sign-in" element={<SsoCallback />} />
-        <Route path="/sign-up" element={<SsoCallback />} />
+        <Route
+          path="/sign-in/*"
+          element={
+            <main className="auth-page">
+              <SignIn routing="path" path="/sign-in" />
+            </main>
+          }
+        />
+        <Route
+          path="/sign-up/*"
+          element={
+            <main className="auth-page">
+              <SignUp routing="path" path="/sign-up" />
+            </main>
+          }
+        />
         <Route
           path="/settings"
           element={

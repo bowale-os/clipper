@@ -164,6 +164,26 @@ def _mark_video_failed(session: Session, video_id, err: Exception) -> None:
     video.pipeline = {**(video.pipeline or {}), "error": str(err)}
 
 
+def _mark_video_retrying(session: Session, video_id) -> None:
+    """Flag that this video is between attempts, without failing it.
+
+    The video keeps its own status: nothing has gone wrong from the user's side yet,
+    and it may well succeed on the next attempt. This only exists so the frontend can
+    say something during the backoff, which is up to ten minutes of a frozen stage.
+    """
+    video = session.get(Video, video_id)
+    if video is None:
+        return
+    video.pipeline = {**(video.pipeline or {}), "retrying": True}
+
+
+def _clear_video_retrying(video: Video) -> None:
+    """Drop the retry flag as soon as an attempt is actually running again."""
+    pipeline = video.pipeline or {}
+    if "retrying" in pipeline:
+        video.pipeline = {k: v for k, v in pipeline.items() if k != "retrying"}
+
+
 def _mark_job_failed(session: Session, job_type: str, video_id, cjob_id, err: Exception) -> None:
     """Put the Job row into the error state, recreating it if it somehow went missing."""
     job = session.execute(select(Job).where(Job.rq_job_id == cjob_id)).scalar_one_or_none()
@@ -188,12 +208,15 @@ def _record_failure(
     params: dict,
     err: Exception,
     fail_video: bool,
+    will_retry: bool,
     on_failure: Optional[FailureHook],
 ) -> None:
     """Persist the error in its own transaction, independent of anything the task held."""
     with session_scope() as session:
         if fail_video:
             _mark_video_failed(session, video_id, err)
+        elif will_retry:
+            _mark_video_retrying(session, video_id)
 
         _mark_job_failed(session, job_type, video_id, cjob_id, err)
 
@@ -284,6 +307,9 @@ def job_contract(
                         )
                         session.add(job)
                     job.status = "running"
+                    # A previous attempt may have left the retry flag on. This attempt
+                    # is running now, so the video is moving again either way.
+                    _clear_video_retrying(video)
                     session.flush()
 
                     ctx = TaskContext(
@@ -328,6 +354,7 @@ def job_contract(
                     params or {},
                     e,
                     fail_video and not _will_retry(current_job),
+                    _will_retry(current_job),
                     on_failure,
                 )
                 raise

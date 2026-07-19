@@ -28,14 +28,40 @@ CAPTION_MAX_CHARS = 42    # longer than this wraps badly on a phone
 CAPTION_MAX_SEC = 3.0     # a cue held longer than this reads as stalled
 CAPTION_GAP_SEC = 0.6     # a pause at least this long ends the current cue
 
-# ASS style applied to the burnt-in captions. Alignment=2 is bottom-centre; the outline
-# keeps white text legible over bright footage. Typeface and size are left to libass.
+# Sizes in an ASS style are script units, NOT output pixels. ffmpeg generates the ASS
+# header for an SRT with a hardcoded PlayResY of 288 (verified against lavc 62.28) and
+# libass scales that space up to the frame, so one unit is 6.7px on the 1920-tall 9:16
+# default. Writing pixel-looking numbers here is the trap: MarginV=180 reads as a modest
+# offset and actually puts the text 1200px up, most of the way up the frame.
+#
+# So sizes are declared as a fraction of frame height and converted. That also keeps them
+# consistent across the 1080-tall formats, where a unit is worth 3.75px instead.
+ASS_PLAY_RES_Y = 288
+
+
+def _units(fraction_of_height: float) -> str:
+    """Fraction of the output height -> ASS script units."""
+    return f"{fraction_of_height * ASS_PLAY_RES_Y:.1f}"
+
+
+# Outline is deliberately thin. It exists so white text survives bright footage, and the
+# old value was thick enough that the black swallowed the letterforms and the captions
+# stopped reading as white at all.
 CAPTION_STYLE = (
+    f"Fontname=Inter,FontSize={_units(0.025)},Bold=1,"
     "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-    "BorderStyle=1,Outline=3,Shadow=0,"
-    "Alignment=2,MarginV=180"
+    f"BorderStyle=1,Outline={_units(0.01)},Shadow=0,"
+    # Sits just above the phone UI that overlays the bottom of a full-screen player.
+    f"Alignment=2,MarginV={_units(0.060)}"
 )
 SRT_FILENAME = "captions.srt"
+
+# The typeface is shipped in the repo rather than named and hoped for. libass can only
+# use fonts installed in the image, the backend deploys on a Nixpacks base we do not
+# control, and a missing font is not an error: libass quietly falls back to its default,
+# so a deploy would look completely unchanged with nothing in the logs to say why.
+FONT_FILENAME = "Inter-Bold.ttf"
+FONT_SOURCE = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts", FONT_FILENAME)
 
 
 def _load_clip(ctx: TaskContext, db) -> Clip:
@@ -231,7 +257,12 @@ def _video_filter(fmt: str, crop: dict | None, srt_filename: str | None) -> str:
     if srt_filename:
         # Captions are burnt in after the scale so the font size means the same thing
         # regardless of the source resolution.
-        stages.append(f"subtitles={srt_filename}:force_style='{CAPTION_STYLE}'")
+        #
+        # fontsdir is '.' for the same reason srt_filename is bare: ffmpeg runs with
+        # cwd=workdir, and the filter parser treats ':' as its own separator, so an
+        # absolute path would need escaping and would break outright on a Windows drive
+        # letter during local runs.
+        stages.append(f"subtitles={srt_filename}:fontsdir=.:force_style='{CAPTION_STYLE}'")
 
     return ",".join(stages)
 
@@ -300,6 +331,10 @@ def render(ctx: TaskContext) -> None:
         srt_path = None
         if params.get("captions"):
             srt_path = _build_srt(ctx, workdir, start, end)
+            if srt_path:
+                # Next to the SRT so the filter can reach it with fontsdir=. — see
+                # _video_filter for why that path cannot be absolute.
+                shutil.copyfile(FONT_SOURCE, os.path.join(workdir, FONT_FILENAME))
 
         vf = _video_filter(fmt, params.get("crop"), SRT_FILENAME if srt_path else None)
 
