@@ -1469,22 +1469,26 @@
 .glide-float {
   position: relative;
   z-index: 1;
-  width: min(100%, 440px);
-  animation: glide-drop 0.32s cubic-bezier(0.65, 0, 0.35, 1);
+  width: min(100%, 616px);
 }
 
+/* The bar arrives first, then the panel unfurls out from under it — the same
+   two-beat sequence the inline variant runs, just dropped in rather than glided
+   up. Animating the pair separately is what gives it the beat. */
 .glide-float .glide-bar {
   border-color: var(--accent-strong);
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
   box-shadow: 0 14px 34px rgba(13, 13, 13, 0.16);
+  animation: glide-drop 0.34s cubic-bezier(0.65, 0, 0.35, 1) both;
 }
 
 .glide-float .glide-panel {
   position: static;
-  max-height: none;
+  max-height: 62vh;
   opacity: 1;
   transform: none;
+  animation: glide-unfurl 0.48s cubic-bezier(0.65, 0, 0.35, 1) 0.22s both;
 }
 
 @keyframes glide-drop {
@@ -1495,6 +1499,17 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes glide-unfurl {
+  from {
+    max-height: 0;
+    opacity: 0;
+  }
+  to {
+    max-height: 62vh;
+    opacity: 1;
   }
 }
 
@@ -1511,7 +1526,8 @@
     transform: none;
   }
 
-  .glide-float {
+  .glide-float .glide-bar,
+  .glide-float .glide-panel {
     animation: none;
   }
 }
