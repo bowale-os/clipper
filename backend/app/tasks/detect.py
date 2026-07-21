@@ -39,8 +39,8 @@ LOUD_MIN_DUR = 1.0
 # How many of the detected moments render without the user asking. Every render
 # re-downloads the whole source, so rendering all MAX_MOMENTS would cost far more than
 # a user typically uses. The rest stay as moments they can render on demand.
-AUTO_RENDER_TOP = 4
-AUTO_RENDER_CAPTIONS = True
+AUTO_RENDER_TOP = 3
+AUTO_RENDER_CAPTIONS = False
 
 SYSTEM_INSTRUCTIONS = f"""You find the most clip-worthy moments in a video from its \
 timestamped transcript. The script below interleaves spoken lines with energy markers:
