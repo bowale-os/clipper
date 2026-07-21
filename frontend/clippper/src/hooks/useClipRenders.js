@@ -132,9 +132,16 @@ export function useClipRenders() {
         }
 
         // Re-seeding an unchanged entry would reset startedAt and keep the
-        // render alive past its timeout, so only write real changes.
-        if (existing && existing.status === entry.status && existing.url === entry.url) {
-          continue
+        // render alive past its timeout, so only write real changes. And a
+        // ready clip's file never changes — only its presigned URL rotates on
+        // every listClips poll. Swapping that fresh URL in would reset the
+        // <video src> and restart playback two seconds in, so once an entry is
+        // ready we keep the URL we already handed the player.
+        if (existing && existing.status === entry.status) {
+          const readyKeepUrl = entry.status === 'ready' && Boolean(existing.url)
+          if (readyKeepUrl || existing.url === entry.url) {
+            continue
+          }
         }
 
         next[entry.key] = {

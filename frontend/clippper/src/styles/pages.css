@@ -27,8 +27,110 @@
   font-weight: 600;
 }
 
-.stream-filter {
-  margin-bottom: var(--space-4);
+/* ============ Home ledger — "Your videos" ============
+   The recency list of processed videos. An editorial index, not a card grid:
+   a light mono number, a title set in the rounded face, a quiet meta line, and
+   the date flush right. Depth is the hairline between rows, nothing more. */
+
+.ledger {
+  margin-top: var(--space-1);
+  /* The list scrolls inside itself so browsing the back catalogue doesn't drag
+     the greeting, search and drop zone off the top of the page. overscroll
+     keeps a flick at the end of the list from bleeding into the page scroll. */
+  max-height: 62vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: var(--space-2);
+}
+
+/* On phones a nested scroll region fights the natural page scroll, so let the
+   list flow and the page take it instead. */
+@media (max-width: 560px) {
+  .ledger {
+    max-height: none;
+    overflow-y: visible;
+    padding-right: 0;
+  }
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 34px 1fr auto;
+  align-items: baseline;
+  gap: var(--space-5);
+  padding: 18px 6px;
+  border-top: var(--hairline) solid var(--border);
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 0.14s ease;
+}
+
+.ledger-row:last-child {
+  border-bottom: var(--hairline) solid var(--border);
+}
+
+.ledger-row:hover {
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.ledger-idx {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--border-strong);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-main {
+  min-width: 0;
+}
+
+.ledger-title {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 1.1875rem;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+  line-height: 1.18;
+  color: var(--text-heading);
+  overflow-wrap: anywhere;
+}
+
+.ledger-sub {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.ledger-date {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ledger-arrow {
+  color: var(--border-strong);
+}
+
+.ledger-row:hover .ledger-arrow {
+  color: var(--accent-strong);
+}
+
+@media (max-width: 560px) {
+  .ledger-row {
+    grid-template-columns: 24px 1fr;
+    gap: var(--space-3);
+  }
+
+  .ledger-date {
+    grid-column: 2;
+    margin-top: 2px;
+  }
 }
 
 /* ============ Landing (signed out) ============ */

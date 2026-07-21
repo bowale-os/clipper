@@ -1,23 +1,12 @@
 import { useEffect, useState } from 'react'
-import { ApiError, getClip } from '../services/api'
+import { getClip } from '../services/api'
 import { useAuthedApi } from './useAuthedApi'
+import { getReadableError } from '../lib/errors'
 
 const POLL_INTERVAL_MS = 3000
 const POLL_TIMEOUT_MS = 10 * 60 * 1000
 
 const idleState = { status: 'idle', url: null, error: '' }
-
-function getReadableError(error) {
-  if (error instanceof ApiError) {
-    return error.status ? `${error.message} (${error.status})` : error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return 'The clip status could not be checked.'
-}
 
 /**
  * Rendering happens on a worker, so POST /clips/create only hands back a
@@ -73,7 +62,7 @@ export function useClipStatus(clipId) {
         timeoutId = window.setTimeout(poll, POLL_INTERVAL_MS)
       } catch (error) {
         if (!cancelled) {
-          setState({ status: 'error', url: null, error: getReadableError(error) })
+          setState({ status: 'error', url: null, error: getReadableError(error, 'The clip status could not be checked.') })
         }
       }
     }
