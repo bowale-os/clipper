@@ -1,9 +1,13 @@
+import logging
+
 from fastapi import Request, HTTPException, status
 from clerk_backend_api import Clerk
 import jwt
 import httpx
 
 from app.config.secrets import settings
+
+logger = logging.getLogger(__name__)
 
 ENV = settings.ENV
 CLERK_FRONTEND_API = settings.CLERK_FRONTEND_API
@@ -41,15 +45,15 @@ async def get_jwks():
     
     jwks_url = f"https://{base_url}"
 
-    print(f"🔑 Fetching JWKS from: {jwks_url}")   # ← Debug line
+    logger.debug("Fetching JWKS from: %s", jwks_url)
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(jwks_url)
-        
-        print(f"Status: {response.status_code}")   # ← Debug
-        
+
+        logger.debug("JWKS fetch status: %s", response.status_code)
+
         if response.status_code != 200:
-            print(f"Response: {response.text[:400]}")
+            logger.error("JWKS fetch failed (%s): %s", response.status_code, response.text[:400])
             raise HTTPException(
                 status_code=500, 
                 detail=f"Failed to fetch JWKS: {response.status_code}"
@@ -100,7 +104,7 @@ async def get_current_user(request: Request) -> str:
 
         authorized_party = payload.get("azp")
         if authorized_party and authorized_party not in ALLOWED_PARTIES:
-            print(f"🚫 Token came from an unlisted origin: {authorized_party}")
+            logger.warning("Token came from an unlisted origin: %s", authorized_party)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token"
@@ -115,7 +119,7 @@ async def get_current_user(request: Request) -> str:
         )
     except jwt.InvalidTokenError as error:
         # Without this the reason is lost and every rejection looks the same.
-        print(f"🚫 Token rejected: {type(error).__name__}: {error}")
+        logger.warning("Token rejected: %s: %s", type(error).__name__, error)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token"

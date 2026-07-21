@@ -1,16 +1,18 @@
 import json
+import logging
 import statistics
 from sqlalchemy import select, update
 from pydantic import BaseModel
-from google import genai
 from google.genai import types
 
-from app.config.secrets import settings
 from app.db.models import Clip, RankingRun, Transcript, Moment, VideoStatus
+from app.services.gemini_client import client
 from app.tasks.render import DEFAULT_FORMAT
 from app.workers.contract import TaskContext, job_contract
 from app.workers.queues import io_queue
 from app.services.r2_client import download_bytes
+
+logger = logging.getLogger(__name__)
 
 GEMINI_MODEL = "gemini-2.5-flash"
 # Per-million-token prices for GEMINI_MODEL. VERIFY against current Gemini pricing
@@ -37,8 +39,8 @@ LOUD_MIN_DUR = 1.0
 # How many of the detected moments render without the user asking. Every render
 # re-downloads the whole source, so rendering all MAX_MOMENTS would cost far more than
 # a user typically uses. The rest stay as moments they can render on demand.
-AUTO_RENDER_TOP = 4
-AUTO_RENDER_CAPTIONS = True
+AUTO_RENDER_TOP = 3
+AUTO_RENDER_CAPTIONS = False
 
 SYSTEM_INSTRUCTIONS = f"""You find the most clip-worthy moments in a video from its \
 timestamped transcript. The script below interleaves spoken lines with energy markers:
@@ -66,8 +68,6 @@ shareability (worth reposting), visual (implied on-screen interest).
 - transcript_excerpt: the verbatim spoken text spanning the clip.
 - reason: one sentence on why it earns its place. title: a punchy, specific caption.
 Return only what the schema asks for. If nothing qualifies, return an empty list."""
-
-client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
 class MomentOut(BaseModel):
@@ -310,6 +310,8 @@ def _queue_auto_renders(ctx: TaskContext, db, moments: list[Moment]) -> list[Cli
 
 @job_contract("detect", skip_if=_detect_done)
 def detect(ctx: TaskContext) -> None:
+    logger.info("detect %s: start", ctx.video.id)
+
     segments, words, features = _load_inputs(ctx)
     boundaries = _sentence_boundaries(words)
     silences = features.get("silences", [])
@@ -353,6 +355,7 @@ def detect(ctx: TaskContext) -> None:
         if response.parsed is None:
             raise RuntimeError(f"Gemini returned no parseable moments: {response.text!r}")
         candidates: list[MomentOut] = response.parsed
+        logger.info("detect %s: gemini returned %d candidate moments", ctx.video.id, len(candidates))
 
 
         usage = response.usage_metadata
@@ -429,6 +432,10 @@ def detect(ctx: TaskContext) -> None:
 
     ctx.set_status(VideoStatus.ready)
     ctx.progress(stage="detect", pct=100)
+    logger.info(
+        "detect %s: done, kept=%d clips_queued=%d",
+        ctx.video.id, ctx.metrics["moments_kept"], ctx.metrics["clips_queued"],
+    )
 
 
 

@@ -347,6 +347,7 @@ def job_contract(
                 # Only fail the video once RQ has run out of retries; otherwise a
                 # transient upstream error would show the user a failed video that
                 # silently fixes itself minutes later.
+                logger.exception("%s failed for video %s", job_type, video_id)
                 _record_failure(
                     job_type,
                     video_id,

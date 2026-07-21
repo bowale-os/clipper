@@ -6,6 +6,7 @@ from sqlalchemy import BigInteger, ForeignKey, Numeric, String, Text, Uuid, Inde
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON, DateTime, Enum, Integer
+from pgvector.sqlalchemy import Vector
 
 
 def _utcnow() -> datetime:
@@ -46,6 +47,7 @@ class Video(Base):
     filename: Mapped[str] = mapped_column(String, nullable=False)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     duration_sec: Mapped[float | None] = mapped_column(Numeric)
+    title_embedding: Mapped[list[float] | None] = mapped_column(Vector(768))
     status: Mapped[VideoStatus] = mapped_column(
         Enum(VideoStatus, name="video_status"), default=VideoStatus.uploading, nullable=False
     )

@@ -85,7 +85,7 @@ def download_bytes(r2_key: str) -> bytes:
 def delete_prefix(prefix: str) -> int:
     r2 = get_r2_client()
 
-    paginator = r2.get_paginator(f"{prefix}")
+    paginator = r2.get_paginator("list_objects_v2")
     pages = paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix=prefix)
 
     deleted_count = 0
@@ -100,9 +100,10 @@ def delete_prefix(prefix: str) -> int:
             Delete={"Objects": objects_to_delete}
         )
         deleted_count += len(objects_to_delete)
-        return deleted_count
-    
-    
+
+    return deleted_count
+
+
 # --- Multipart upload (large files) ---
 
 PART_URL_EXPIRES = 3600  # frontend re-signs on 403, so 1h is plenty
