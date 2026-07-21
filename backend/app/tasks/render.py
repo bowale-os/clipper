@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -12,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.db.models import Clip
 from app.workers.contract import TaskContext, WorkCancelled, job_contract
 from app.services.r2_client import download_bytes, download_file, upload_file
+
+logger = logging.getLogger(__name__)
 
 # Output presets: aspect ratio -> exact (width, height). 9:16 is the short-form default.
 FORMATS = {
@@ -319,6 +322,8 @@ def render(ctx: TaskContext) -> None:
 
     fmt = params.get("format", DEFAULT_FORMAT)
 
+    logger.info("render %s: start (clip=%s, format=%s)", ctx.video.id, clip_id, fmt)
+
     started = time.monotonic()
     workdir = tempfile.mkdtemp()
     suffix = os.path.splitext(ctx.video.r2_key)[1] or ".mp4"
@@ -339,6 +344,7 @@ def render(ctx: TaskContext) -> None:
         vf = _video_filter(fmt, params.get("crop"), SRT_FILENAME if srt_path else None)
 
         download_file(ctx.video.r2_key, src_path)
+        logger.info("render %s: source downloaded, cutting clip=%s", ctx.video.id, clip_id)
         _cut(workdir, src_path, out_path, start, duration, vf)
 
         out_bytes = os.path.getsize(out_path)
@@ -360,3 +366,5 @@ def render(ctx: TaskContext) -> None:
         "output_bytes": out_bytes,
         "render_ms": int((time.monotonic() - started) * 1000),
     })
+
+    logger.info("render %s: done in %dms, clip=%s", ctx.video.id, ctx.metrics["render_ms"], clip_id)

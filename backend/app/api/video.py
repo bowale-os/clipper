@@ -6,24 +6,27 @@ import uuid
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 from app.api.common import get_owned_video
-from app.db.models import Moment, User, Video, VideoStatus
+from app.db.models import Moment, User, Video, VideoStatus, Clip
 from app.db.session import get_db
 from app.dependencies.user import get_current_user_record
+from app.dependencies.rate_limit import rate_limit
 from app.services.r2_client import (
     abort_multipart_upload,
     complete_multipart_upload,
     create_multipart_upload,
     delete_file,
+    delete_prefix,
     generate_part_upload_urls,
     generate_upload_url,
     head_object_size,
     list_uploaded_parts,
 )
 from app.workers.queues import JOB_RETRY, io_queue
+from app.services.embeddings import embed_text
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +67,7 @@ class SignPartsRequest(BaseModel):
 v_router = APIRouter()
 
 
-def _video_to_dict(video: Video) -> dict:
+def _video_to_dict(video: Video, clip_count: int = 0) -> dict:
     # video.pipeline also carries upload state (upload_id, part offsets), which is
     # internal, so the stage fields are picked out by name rather than passed through.
     pipeline = video.pipeline or {}
@@ -82,7 +85,23 @@ def _video_to_dict(video: Video) -> dict:
         # True while a stage is waiting out its backoff after a transient upstream
         # failure. The video has not failed; it just will not move for a few minutes.
         "retrying": bool(pipeline.get("retrying")),
+        "clip_count": clip_count,
     }
+
+
+def _ready_clip_counts(db: Session, user: User, video_ids=None) -> dict:
+    """{video_id: number of ready clips}, one query regardless of how many videos.
+
+    video_ids, if given, narrows the count to just those videos (search scopes it to
+    the matched set); omitted, it covers every video the user owns (the full list).
+    """
+    stmt = select(Clip.video_id, func.count(Clip.id)).where(
+        Clip.user_id == user.id, Clip.status == "ready"
+    )
+    if video_ids is not None:
+        stmt = stmt.where(Clip.video_id.in_(video_ids))
+    stmt = stmt.group_by(Clip.video_id)
+    return dict(db.execute(stmt).all())
 
 
 def _upload_state(video: Video) -> dict:
@@ -99,6 +118,7 @@ def init_video_upload(
     request: InitialVideoRequest,
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
+    _rl: None = Depends(rate_limit("video_init", limit=5, window_seconds=3600)),
 ):
     if request.size > MAX_SIZE:
         raise HTTPException(status_code=413, detail=f"File exceeds the {MAX_SIZE // 1024**3} GiB upload limit")
@@ -138,6 +158,12 @@ def init_video_upload(
             "part_count": part_count,
         }
 
+    try:
+        title_embed = embed_text(request.filename)
+    except Exception as e:
+        logger.exception("Filename was not embedded for video %s. Error is %s", video_id, e)
+        title_embed = None
+
     video = Video(
         id=video_id,
         user_id=user.id,
@@ -146,6 +172,7 @@ def init_video_upload(
         status=VideoStatus.uploading,
         r2_key=r2_key,
         pipeline={"upload": upload_state},
+        title_embedding=title_embed
     )
     db.add(video)
     try:
@@ -243,6 +270,7 @@ def complete_video_upload(
     request: CompleteVideoRequest,
     user: User = Depends(get_current_user_record),
     db: Session = Depends(get_db),
+    _rl: None = Depends(rate_limit("video_complete", limit=5, window_seconds=3600)),
 ):
     video = get_owned_video(db, request.video_id, user)
 
@@ -323,9 +351,11 @@ def get_videos(
         select(Video).where(Video.user_id == user.id).order_by(Video.created_at.desc())
     ).all()
 
+    counts = _ready_clip_counts(db, user)
+
     grouped = {status: [] for status in VideoStatus}
     for video in videos:
-        grouped[video.status].append(_video_to_dict(video))
+        grouped[video.status].append(_video_to_dict(video, counts.get(video.id, 0)))
 
     return {
         "uploaded_videos": grouped[VideoStatus.uploaded],
@@ -334,6 +364,64 @@ def get_videos(
         "ready_videos": grouped[VideoStatus.ready],
         "error_videos": grouped[VideoStatus.error],
     }
+
+
+# Cosine distance cutoff for the semantic branch: below this, a title embedding counts
+# as a real match rather than just "closest of what's there." Loose until real query
+# traffic shows where the useful cutoff is.
+SEARCH_DISTANCE_CUTOFF = 0.5
+SEARCH_LIMIT = 40
+
+
+@v_router.get("/search")
+def search_videos(
+    q: str,
+    user: User = Depends(get_current_user_record),
+    db: Session = Depends(get_db),
+    _rl: None = Depends(rate_limit("video_search", limit=30, window_seconds=60)),
+):
+    q = q.strip()
+    if not q:
+        return {"videos": []}
+
+    try:
+        query_vec = embed_text(q)
+    except Exception:
+        logger.exception("Failed to embed search query for user %s", user.id)
+        query_vec = None
+
+    # Scoping by user_id first (videos_user_idx) keeps this an exact scan over one
+    # user's own rows rather than a filtered approximate-nearest-neighbor search over
+    # the whole table, which is both cheap at this scale and avoids the HNSW index
+    # returning irrelevant videos when the true match isn't among its top candidates.
+    matched: dict[uuid.UUID, Video] = {}
+
+    if query_vec is not None:
+        semantic_hits = db.scalars(
+            select(Video)
+            .where(
+                Video.user_id == user.id,
+                Video.title_embedding.isnot(None),
+                Video.title_embedding.cosine_distance(query_vec) < SEARCH_DISTANCE_CUTOFF,
+            )
+            .order_by(Video.title_embedding.cosine_distance(query_vec))
+            .limit(SEARCH_LIMIT)
+        ).all()
+        for video in semantic_hits:
+            matched[video.id] = video
+
+    lexical_hits = db.scalars(
+        select(Video).where(Video.user_id == user.id, Video.filename.ilike(f"%{q}%"))
+    ).all()
+    for video in lexical_hits:
+        matched.setdefault(video.id, video)
+
+    if not matched:
+        return {"videos": []}
+
+    counts = _ready_clip_counts(db, user, matched.keys())
+
+    return {"videos": [_video_to_dict(v, counts.get(v.id, 0)) for v in matched.values()]}
 
 
 @v_router.get("/{video_id}/metadata")
@@ -399,13 +487,22 @@ def delete_video(
             if e.response.get("Error", {}).get("Code") != "NoSuchUpload":
                 logger.exception("Failed to abort multipart upload during delete: video_id=%s", video_id)
 
+    clip_r2_keys = [
+        c.r2_key
+        for c in db.scalars(select(Clip).where(Clip.video_id == video.id)).all()
+        if c.r2_key
+    ]
+
     try:
         delete_file(video.r2_key)
+        delete_prefix(f"artifacts/{video_id}")
+        for clip_key in clip_r2_keys:
+            delete_file(clip_key)
     except Exception:
-        logger.exception("Failed to delete R2 object: video_id=%s r2_key=%s", video_id, video.r2_key)
+        logger.exception("Failed to delete R2 objects during video delete: video_id=%s", video_id)
         raise HTTPException(status_code=500, detail="Failed to delete video from storage")
 
-    # FK cascades cover transcripts, moments, clips, and jobs rows.
+    # FK cascades cover transcripts, moments, clips, and jobs rows (DB rows only — their R2 objects were deleted above).
     db.delete(video)
     db.commit()
 

@@ -13,3 +13,4 @@ redis[hiredis]
 rq
 groq
 google-genai
+pgvector

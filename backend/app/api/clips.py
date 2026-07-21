@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db.models import User, VideoStatus, Moment, Video, Clip
 from app.dependencies.user import get_current_user_record
+from app.dependencies.rate_limit import rate_limit
 from app.api.common import get_owned_video
 from app.db.session import get_db
 from app.tasks.render import FORMATS, DEFAULT_FORMAT
@@ -36,7 +37,8 @@ c_router = APIRouter()
 def create_clip(
     request: ClipRequest,
     user: User = Depends(get_current_user_record),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _rl: None = Depends(rate_limit("clip_create", limit=10, window_seconds=60)),
 ):
     video = get_owned_video(db, request.video_id, user)
     if video.status != VideoStatus.ready:
