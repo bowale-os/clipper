@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { useUser } from '@clerk/react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import TopBar from '../components/TopBar'
-import DropZone from '../components/DropZone'
+import GlideSearch from '../components/GlideSearch'
 import ClipTile from '../components/ClipTile'
 import ClipPreview from '../components/ClipPreview'
 import LiveStatus from '../components/LiveStatus'
 import EmptyState from '../components/EmptyState'
 import DeleteVideo from '../components/DeleteVideo'
-import { ScissorsIcon } from '../components/icons'
+import { ArrowLeftIcon, ScissorsIcon } from '../components/icons'
 import { useUserVideos } from '../hooks/useUserVideos'
 import { useVideoMoments } from '../hooks/useVideoMoments'
 import { useVideoClips } from '../hooks/useVideoClips'
@@ -19,68 +18,44 @@ import { flattenVideos } from '../lib/videos'
 import { getVideoId } from '../lib/format'
 
 const REFRESH_MS = 15000
-
-function greeting(date = new Date()) {
-  const hour = date.getHours()
-
-  if (hour < 12) {
-    return 'Morning'
-  }
-
-  if (hour < 18) {
-    return 'Afternoon'
-  }
-
-  return 'Evening'
-}
-
-function isWorking(video) {
-  return ['uploaded', 'processing'].includes(video?.status)
-}
+const WORKING = ['uploading', 'uploaded', 'processing']
 
 /**
- * The whole signed-in app. There is no dashboard and no separate welcome page —
- * this one screen greets you on the first visit and then gets out of the way,
- * handing the space to your clips.
+ * One video, at its own address. Resolves the video from the shared list, then
+ * parks the moments/clips hooks until it is ready so a processing or missing id
+ * never fires a doomed request. Everything about a finished video — the clips
+ * grid, the preview, "Cut your own", delete — lives here.
  */
 function Studio() {
-  const { user } = useUser()
+  const { videoId } = useParams()
+  const navigate = useNavigate()
   const { prefs } = usePrefs()
-  const { data, error, isLoading, refresh } = useUserVideos()
+  const { data, isLoading: isListLoading, refresh } = useUserVideos()
   const { renders, start, seed } = useClipRenders()
 
-  const [selectedVideoId, setSelectedVideoId] = useState('')
   const [openMoment, setOpenMoment] = useState(null)
 
-  const handleDeleted = useCallback(
-    (deletedId) => {
-      // Drop the pick if it was the deleted one, so the list falls back to the newest.
-      setSelectedVideoId((current) => (current === deletedId ? '' : current))
-      setOpenMoment(null)
-      refresh({ markLoading: false })
-    },
-    [refresh],
-  )
-
-  const remove = useDeleteVideo({ onDeleted: handleDeleted })
-
   const videos = useMemo(() => flattenVideos(data), [data])
-  const readyVideos = useMemo(() => videos.filter((video) => video.status === 'ready'), [videos])
-  const workingVideos = useMemo(() => videos.filter(isWorking), [videos])
-  const interrupted = useMemo(() => videos.find((video) => video.status === 'uploading'), [videos])
+  const video = useMemo(
+    () => videos.find((item) => getVideoId(item) === videoId) || null,
+    [videos, videoId],
+  )
+  const status = video?.status
+  const isReady = status === 'ready'
+  const isWorking = WORKING.includes(status)
+  const notFound = !isListLoading && !video
 
-  // Default to the newest analyzed stream, but never fight a pick the user made.
-  const activeVideo =
-    readyVideos.find((video) => getVideoId(video) === selectedVideoId) || readyVideos[0] || null
-  const activeVideoId = getVideoId(activeVideo)
+  const remove = useDeleteVideo({
+    onDeleted: () => navigate('/', { replace: true }),
+  })
 
   const {
     data: momentsData,
     error: momentsError,
     isLoading: isMomentsLoading,
-  } = useVideoMoments(activeVideoId)
+  } = useVideoMoments(isReady ? videoId : '')
 
-  const { clips: serverClips } = useVideoClips(activeVideoId)
+  const { clips: serverClips } = useVideoClips(isReady ? videoId : '')
 
   const moments = useMemo(() => momentsData?.moments || [], [momentsData])
 
@@ -101,7 +76,7 @@ function Studio() {
           captions: clip.captions,
           clipId: clip.clip_id,
           format: clip.format,
-          key: getMomentKey(moment, activeVideoId),
+          key: getMomentKey(moment, videoId),
           moment,
           status: clip.status,
           url: clip.url,
@@ -111,11 +86,10 @@ function Studio() {
     if (entries.length) {
       seed(entries)
     }
-  }, [activeVideoId, moments, seed, serverClips])
+  }, [videoId, moments, seed, serverClips])
 
   // Moments with a finished clip behind them lead the grid; everything else,
-  // including clips still rendering or ones that failed, stays below. A clip row
-  // existing is not the same as a clip you can watch.
+  // including clips still rendering or ones that failed, stays below.
   const { done, rest } = useMemo(() => {
     const withClip = new Set(
       serverClips
@@ -130,23 +104,19 @@ function Studio() {
     }
   }, [moments, serverClips])
 
-  // Something is still cooking, so keep the list warm without a refresh button.
+  // Still processing: keep the list warm so the page flips to ready on its own.
   useEffect(() => {
-    if (!workingVideos.length) {
+    if (!isWorking) {
       return
     }
 
     const intervalId = window.setInterval(() => refresh({ markLoading: false }), REFRESH_MS)
     return () => window.clearInterval(intervalId)
-  }, [workingVideos.length, refresh])
+  }, [isWorking, refresh])
 
   const handleRender = useCallback(
     ({ moment, format, captions, autoDownload = false }) => {
-      // No shape asked for means "just give me this clip". If one is already
-      // rendered we hand that one over, even if it came out a different shape
-      // than the preference, rather than quietly paying to render it again. The
-      // preview keeps the buttons for asking for another shape on purpose.
-      const existing = renders[getMomentKey(moment, activeVideoId)]
+      const existing = renders[getMomentKey(moment, videoId)]
       const settled = existing?.status === 'ready' && existing.url
 
       start({
@@ -159,10 +129,10 @@ function Studio() {
               : prefs.captions,
         format: format || (settled ? existing.format : prefs.format),
         moment,
-        videoId: activeVideoId,
+        videoId,
       })
     },
-    [activeVideoId, prefs.captions, prefs.format, renders, start],
+    [videoId, prefs.captions, prefs.format, renders, start],
   )
 
   const handleDownload = useCallback(
@@ -170,248 +140,167 @@ function Studio() {
     [handleRender],
   )
 
-  const hasAnything = videos.length > 0
-  const openKey = openMoment ? getMomentKey(openMoment, activeVideoId) : ''
+  const openKey = openMoment ? getMomentKey(openMoment, videoId) : ''
+  const search = <GlideSearch variant="overlay" videos={videos} />
 
-  // First visit: greet, explain, and give the drop zone the room.
-  if (!isLoading && !hasAnything) {
-    return (
-      <div className="app-shell">
-        <div className="app-content">
-          <TopBar />
+  function renderBody() {
+    if (notFound) {
+      return (
+        <EmptyState
+          description="This video may have been deleted, or the link is wrong. Head back home to pick another."
+          glyph={<ScissorsIcon size={22} />}
+          roomy
+          title="We can't find that video"
+        />
+      )
+    }
 
-          <div className="welcome">
-            <h1>Welcome{user?.firstName ? `, ${user.firstName}` : ''}. Let's get your first clips.</h1>
-            <p>
-              Drop in a stream and we will watch the whole thing for you, then hand back the bits
-              worth posting.
-            </p>
-          </div>
-
-          <DropZone large onUploaded={() => refresh({ markLoading: false })} />
-
-          <ol className="steps">
-            <li>
-              <span>
-                <b>You upload.</b> A stream, a recording, anything long.
-              </span>
-            </li>
-            <li>
-              <span>
-                <b>We watch all of it.</b> Every minute, so you don't have to.
-              </span>
-            </li>
-            <li>
-              <span>
-                <b>You get clips.</b> Ready to post, with captions already on.
-              </span>
-            </li>
-          </ol>
-
-          {error ? <p className="message error" style={{ marginTop: 'var(--space-6)' }}>{error}</p> : null}
+    // List still loading and no match yet — never claim "not found" too early.
+    if (!video) {
+      return (
+        <div className="clip-grid">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div className="skeleton skeleton-tile" key={index} />
+          ))}
         </div>
-      </div>
+      )
+    }
+
+    if (isWorking) {
+      return (
+        <div className="processing-list">
+          <div className="processing-row">
+            <span className="processing-thumb" />
+            <div className="processing-body">
+              <b>{video.filename || 'Your video'}</b>
+              <div className="progress-track is-indeterminate">
+                <span />
+              </div>
+            </div>
+            <LiveStatus status={video.retrying ? 'waiting' : video.status} />
+          </div>
+        </div>
+      )
+    }
+
+    if (status === 'error') {
+      return (
+        <p className="message error">
+          {video.error || 'Something went wrong watching this one. You can delete it and try again.'}
+        </p>
+      )
+    }
+
+    if (momentsError) {
+      return <p className="message error">{momentsError}</p>
+    }
+
+    if (isMomentsLoading) {
+      return (
+        <div className="clip-grid">
+          {Array.from({ length: 4 }, (_, index) => (
+            <div className="skeleton skeleton-tile" key={index} />
+          ))}
+        </div>
+      )
+    }
+
+    if (!moments.length) {
+      return (
+        <EmptyState
+          description="We got through this one but nothing stood out. A longer video usually gives us more to work with, or you can cut a bit yourself."
+          glyph={<ScissorsIcon size={22} />}
+          title="Nothing worth posting in this one"
+        />
+      )
+    }
+
+    return (
+      <>
+        {done.length ? (
+          <>
+            <div className="section-head">
+              <h2>Ready</h2>
+              <span className="section-note">
+                {done.length === 1 ? 'One clip is' : `${done.length} clips are`} done and ready to
+                post.
+              </span>
+            </div>
+            <div className="clip-grid">
+              {done.map((moment, index) => (
+                <ClipTile
+                  format={renders[getMomentKey(moment, videoId)]?.format || prefs.format}
+                  isTop={index === 0}
+                  key={getMomentKey(moment, videoId)}
+                  moment={moment}
+                  onDownload={handleDownload}
+                  onOpen={setOpenMoment}
+                  render={renders[getMomentKey(moment, videoId)]}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+
+        {rest.length ? (
+          <>
+            <div className="section-head">
+              <h2>Also worth a look</h2>
+              <span className="section-note">We spotted these too. Tap one to make it.</span>
+            </div>
+            <div className="clip-grid">
+              {rest.map((moment) => (
+                <ClipTile
+                  format={renders[getMomentKey(moment, videoId)]?.format || prefs.format}
+                  key={getMomentKey(moment, videoId)}
+                  moment={moment}
+                  onDownload={handleDownload}
+                  onOpen={setOpenMoment}
+                  render={renders[getMomentKey(moment, videoId)]}
+                />
+              ))}
+            </div>
+          </>
+        ) : null}
+      </>
     )
   }
-
-  // Only clips with a file behind them. Counting every moment here promised more
-  // than the screen was actually handing over.
-  const readyCount = serverClips.filter((clip) => clip.status === 'ready').length
 
   return (
     <div className="app-shell">
       <div className="app-content">
-        <TopBar />
+        <TopBar actions={search} />
 
-        <p className="greet">
-          {greeting()}
-          {user?.firstName ? (
-            <>
-              , <b>{user.firstName}</b>
-            </>
-          ) : null}
-          .{' '}
-          {readyCount
-            ? `${readyCount} ${readyCount === 1 ? 'clip is' : 'clips are'} ready.`
-            : workingVideos.length
-              ? 'We are still watching your stream.'
-              : moments.length
-                ? 'Your clips are on the way.'
-                : 'Drop in a stream to get started.'}
-        </p>
+        <Link className="back-link" to="/">
+          <ArrowLeftIcon size={15} />
+          Back to home
+        </Link>
 
-        <DropZone
-          onUploaded={() => refresh({ markLoading: false })}
-          resumeTarget={
-            interrupted
-              ? {
-                  videoId: getVideoId(interrupted),
-                  filename: interrupted.filename,
-                  sizeBytes: interrupted.size_bytes ?? interrupted.size,
-                }
-              : null
-          }
-        />
-
-        {error ? <p className="message error" style={{ marginTop: 'var(--space-4)' }}>{error}</p> : null}
-
-        {workingVideos.length ? (
-          <>
-            <div className="section-head">
-              <h2>Working on it</h2>
-            </div>
-            <div className="processing-list">
-              {workingVideos.map((video) => {
-                const id = getVideoId(video)
-
-                return (
-                  <div className="processing-row" key={id}>
-                    <span className="processing-thumb" />
-                    <div className="processing-body">
-                      <b>{video.filename || 'Your stream'}</b>
-                      <div className="progress-track is-indeterminate">
-                        <span />
-                      </div>
-                    </div>
-                    <LiveStatus status={video.retrying ? 'waiting' : video.status} />
-                    <DeleteVideo
-                      error={remove.error}
-                      filename={video.filename}
-                      isDeleting={remove.deletingId === id}
-                      isPending={remove.pendingId === id}
-                      onAsk={() => remove.ask(id)}
-                      onCancel={remove.cancel}
-                      onConfirm={() => remove.confirm(id)}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-          </>
-        ) : null}
-
-        {readyVideos.length > 1 ? (
-          <>
-            <div className="section-head">
-              <h2>Your streams</h2>
-            </div>
-            <div className="chip-row stream-filter">
-              {readyVideos.map((video) => {
-                const id = getVideoId(video)
-                return (
-                  <button
-                    aria-pressed={id === activeVideoId}
-                    className="chip"
-                    key={id}
-                    onClick={() => setSelectedVideoId(id)}
-                    type="button"
-                  >
-                    <span className="chip-label">{video.filename || 'Untitled'}</span>
-                  </button>
-                )
-              })}
-            </div>
-          </>
-        ) : null}
-
-        {activeVideo ? (
-          <>
-            <div className="section-head">
-              <h2>{activeVideo.filename || 'Untitled'}</h2>
+        {video ? (
+          <div className="section-head">
+            <h2>
+              <b>{video.filename || 'Untitled video'}</b>
+            </h2>
+            {isReady ? (
               <div className="section-actions">
-                <Link className="section-link" to={`/trim/${encodeURIComponent(activeVideoId)}`}>
+                <Link className="section-link" to={`/trim/${encodeURIComponent(videoId)}`}>
                   Cut your own
                 </Link>
                 <DeleteVideo
                   error={remove.error}
-                  filename={activeVideo.filename}
-                  isDeleting={remove.deletingId === activeVideoId}
-                  isPending={remove.pendingId === activeVideoId}
-                  onAsk={() => remove.ask(activeVideoId)}
+                  filename={video.filename}
+                  isDeleting={remove.deletingId === videoId}
+                  isPending={remove.pendingId === videoId}
+                  onAsk={() => remove.ask(videoId)}
                   onCancel={remove.cancel}
-                  onConfirm={() => remove.confirm(activeVideoId)}
+                  onConfirm={() => remove.confirm(videoId)}
                 />
               </div>
-            </div>
-
-            {momentsError ? <p className="message error">{momentsError}</p> : null}
-
-            {isMomentsLoading ? (
-              <div className="clip-grid">
-                {Array.from({ length: 4 }, (_, index) => (
-                  <div className="skeleton skeleton-tile" key={index} />
-                ))}
-              </div>
-            ) : moments.length ? (
-              <>
-                {done.length ? (
-                  <>
-                    <div className="section-head">
-                      <h2>Ready</h2>
-                      <span className="section-note">
-                        {done.length === 1 ? 'One clip is' : `${done.length} clips are`} done and
-                        ready to post.
-                      </span>
-                    </div>
-                    <div className="clip-grid">
-                      {done.map((moment, index) => (
-                        <ClipTile
-                          format={
-                            renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format
-                          }
-                          isTop={index === 0}
-                          key={getMomentKey(moment, activeVideoId)}
-                          moment={moment}
-                          onDownload={handleDownload}
-                          onOpen={setOpenMoment}
-                          render={renders[getMomentKey(moment, activeVideoId)]}
-                        />
-                      ))}
-                    </div>
-                  </>
-                ) : null}
-
-                {rest.length ? (
-                  <>
-                    <div className="section-head">
-                      <h2>Also worth a look</h2>
-                      <span className="section-note">
-                        We spotted these too. Tap one to make it.
-                      </span>
-                    </div>
-                    <div className="clip-grid">
-                      {rest.map((moment) => (
-                        <ClipTile
-                          format={
-                            renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format
-                          }
-                          key={getMomentKey(moment, activeVideoId)}
-                          moment={moment}
-                          onDownload={handleDownload}
-                          onOpen={setOpenMoment}
-                          render={renders[getMomentKey(moment, activeVideoId)]}
-                        />
-                      ))}
-                    </div>
-                  </>
-                ) : null}
-              </>
-            ) : (
-              <EmptyState
-                description="We got through this one but nothing stood out. A longer stream usually gives us more to work with, or you can cut a bit yourself."
-                glyph={<ScissorsIcon size={22} />}
-                title="Nothing worth posting in this one"
-              />
-            )}
-          </>
-        ) : !workingVideos.length && !isLoading ? (
-          <EmptyState
-            description="Drop a stream above and your clips will start showing up here."
-            glyph={<ScissorsIcon size={22} />}
-            roomy
-            title="No clips yet"
-          />
+            ) : null}
+          </div>
         ) : null}
+
+        {renderBody()}
       </div>
 
       {openMoment ? (

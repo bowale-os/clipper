@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
-import { AuthExpiredError, ApiError, abortVideoUpload, uploadVideoFile } from '../services/api'
+import { AuthExpiredError, abortVideoUpload, uploadVideoFile } from '../services/api'
 import { useAuthedApi } from './useAuthedApi'
+import { getReadableError } from '../lib/errors'
 
 const initialUploadState = {
   file: null,
@@ -9,18 +10,6 @@ const initialUploadState = {
   result: null,
   status: 'idle',
   resumeTarget: null,
-}
-
-function getReadableError(error) {
-  if (error instanceof ApiError) {
-    return error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return 'Something went wrong while uploading your video.'
 }
 
 function isVideoFile(file) {

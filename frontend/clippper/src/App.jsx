@@ -4,6 +4,7 @@ import ClerkProviderWithRoutes from './services/auth/ClerkProviderWithRoutes'
 import ProtectedRoute from './services/auth/ProtectedRoute'
 import SsoCallback from './services/auth/SsoCallback'
 import Landing from './pages/Landing'
+import Home from './pages/Home'
 import Studio from './pages/Studio'
 import Settings from './pages/Settings'
 import Trim from './pages/Trim'
@@ -21,7 +22,7 @@ function Root() {
     return null
   }
 
-  return isSignedIn ? <Studio /> : <Landing />
+  return isSignedIn ? <Home /> : <Landing />
 }
 
 function App() {
@@ -51,6 +52,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Settings />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/v/:videoId"
+          element={
+            <ProtectedRoute>
+              <Studio />
             </ProtectedRoute>
           }
         />

@@ -115,7 +115,7 @@ function DropZone({ large = false, onUploaded, resumeTarget: initialResumeTarget
         <div className="dropzone-text">
           {isBusy ? (
             <>
-              <strong>{file?.name || resumeTarget?.filename || 'Your stream'}</strong>
+              <strong>{file?.name || resumeTarget?.filename || 'Your video'}</strong>
               <span>{busyCopy[status] || 'Working on it.'}</span>
             </>
           ) : status === 'success' ? (
@@ -137,7 +137,7 @@ function DropZone({ large = false, onUploaded, resumeTarget: initialResumeTarget
             </>
           ) : (
             <>
-              <strong>Drop a stream, or click to upload</strong>
+              <strong>Drop a video, or click to upload</strong>
               <span>MP4 or MOV. However long it is, we will get through it.</span>
             </>
           )}

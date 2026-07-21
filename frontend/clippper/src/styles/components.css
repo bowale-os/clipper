@@ -1123,3 +1123,395 @@
   color: var(--void);
   font-variant-numeric: tabular-nums;
 }
+
+/* ============ Back link ============ */
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--space-5);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.back-link:hover {
+  color: var(--text-heading);
+}
+
+/* ============ Glide search ============
+   One search box, matched on the video's name. Inline it glides up to dock and
+   unfurls its results; as an overlay it drops in from a pill. Close runs the
+   sequence in reverse — the panel retracts into the bar, then the bar returns.
+   Depth here is the one place a soft shadow is allowed: the docked panel has to
+   read as floating above the dimmed page. Everything else stays flat. */
+
+.glide-search {
+  position: relative;
+  margin-bottom: var(--space-4);
+}
+
+.glide-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+  background: rgba(13, 13, 13, 0.44);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.5s cubic-bezier(0.65, 0, 0.35, 1) 0.18s;
+}
+
+.glide-search.is-open .glide-scrim {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 0.5s cubic-bezier(0.65, 0, 0.35, 1) 0s;
+}
+
+.glide-wrap {
+  position: relative;
+  z-index: 41;
+  transition: transform 0.72s cubic-bezier(0.65, 0, 0.35, 1) 0.3s;
+}
+
+.glide-search.is-open .glide-wrap {
+  transform: translateY(-52px) scale(1.01);
+  transition: transform 0.72s cubic-bezier(0.65, 0, 0.35, 1) 0s;
+}
+
+.glide-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 15px 17px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-input);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 1rem;
+  cursor: text;
+  transition: border-color 0.4s ease 0.3s, box-shadow 0.5s ease 0.3s, border-radius 0.45s ease 0.3s;
+}
+
+.glide-bar:hover {
+  border-color: var(--border-strong);
+}
+
+.glide-search.is-open .glide-bar {
+  border-color: var(--accent-strong);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: 0 14px 34px rgba(13, 13, 13, 0.16);
+  transition: border-color 0.4s ease 0s, box-shadow 0.55s ease 0s, border-radius 0.45s ease 0s;
+}
+
+.glide-bar svg {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.glide-ph {
+  color: var(--text-muted);
+}
+
+.glide-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  font-family: inherit;
+  font-size: 1rem;
+  color: var(--text-heading);
+}
+
+.glide-k {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  border: var(--hairline) solid var(--border);
+  border-radius: 5px;
+  padding: 2px 7px;
+}
+
+.glide-esc {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: var(--hairline) solid var(--border);
+  border-radius: 5px;
+  padding: 2px 7px;
+  background: none;
+  cursor: pointer;
+}
+
+.glide-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 40;
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-16px);
+  transform-origin: top center;
+  background: var(--canvas);
+  border: var(--hairline) solid var(--accent-strong);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-input) var(--radius-input);
+  box-shadow: 0 14px 34px rgba(13, 13, 13, 0.16);
+  transition: max-height 0.42s cubic-bezier(0.65, 0, 0.35, 1) 0s, opacity 0.3s ease 0s,
+    transform 0.42s cubic-bezier(0.65, 0, 0.35, 1) 0s;
+}
+
+.glide-search.is-open .glide-panel {
+  max-height: 62vh;
+  opacity: 1;
+  transform: translateY(0);
+  transition: max-height 0.58s cubic-bezier(0.65, 0, 0.35, 1) 0.34s, opacity 0.4s ease 0.4s,
+    transform 0.5s cubic-bezier(0.65, 0, 0.35, 1) 0.38s;
+}
+
+.glide-panel::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0 7px,
+    var(--surface) 7px 13px,
+    transparent 13px 20px
+  );
+  border-right: var(--hairline) solid var(--border);
+}
+
+.glide-panel-inner {
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-left: 6px;
+}
+
+.glide-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 14px 14px 6px 20px;
+}
+
+.glide-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: calc(100% - var(--space-4));
+  margin: 0 var(--space-2);
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  color: var(--text-body-color);
+  cursor: pointer;
+}
+
+.glide-row.is-active {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.glide-thumb {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 34px;
+  border-radius: 4px;
+  background: var(--void);
+  overflow: hidden;
+}
+
+.glide-thumb::before,
+.glide-thumb::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22%;
+  background: #000;
+  opacity: 0.4;
+}
+
+.glide-thumb::before {
+  top: 0;
+}
+
+.glide-thumb::after {
+  bottom: 0;
+}
+
+.glide-row.is-active .glide-thumb {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+}
+
+.glide-row-name {
+  min-width: 0;
+  font-size: var(--text-body);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.glide-row-meta {
+  margin-left: auto;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.glide-row.is-active .glide-row-meta {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.glide-empty {
+  padding: 16px 20px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.glide-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  padding: 10px 18px 14px 20px;
+  margin-top: 6px;
+  border-top: var(--hairline) solid var(--border);
+}
+
+.glide-foot span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.glide-foot kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--surface-raised);
+  color: var(--text-heading);
+}
+
+/* ---- Overlay variant (the pill + floating panel used off Home) ---- */
+
+.glide-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px 12px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+.glide-pill:hover {
+  border-color: var(--void);
+  color: var(--text-heading);
+}
+
+.glide-pill .glide-k {
+  margin-left: 2px;
+}
+
+.glide-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: grid;
+  justify-items: center;
+  align-items: start;
+  padding: 12vh var(--space-5) var(--space-5);
+}
+
+.glide-scrim.is-static {
+  position: absolute;
+  z-index: 0;
+  opacity: 1;
+  pointer-events: auto;
+  transition: none;
+}
+
+.glide-float {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 440px);
+  animation: glide-drop 0.32s cubic-bezier(0.65, 0, 0.35, 1);
+}
+
+.glide-float .glide-bar {
+  border-color: var(--accent-strong);
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  box-shadow: 0 14px 34px rgba(13, 13, 13, 0.16);
+}
+
+.glide-float .glide-panel {
+  position: static;
+  max-height: none;
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes glide-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glide-scrim,
+  .glide-wrap,
+  .glide-bar,
+  .glide-panel {
+    transition-duration: 0.12s !important;
+    transition-delay: 0s !important;
+  }
+
+  .glide-search.is-open .glide-wrap {
+    transform: none;
+  }
+
+  .glide-float {
+    animation: none;
+  }
+}

@@ -3,11 +3,12 @@ import { runMultipartUpload } from './multipartUpload'
 const API_URL = import.meta.env.VITE_API_URL
 
 export class ApiError extends Error {
-  constructor(message, { status, details } = {}) {
+  constructor(message, { status, details, retryAfterSec } = {}) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.details = details
+    this.retryAfterSec = retryAfterSec
   }
 }
 
@@ -74,9 +75,11 @@ async function requestJson(path, { method = 'GET', token, getToken, body } = {})
   }
 
   if (!response.ok) {
+    const retryAfterHeader = response.headers.get('retry-after')
     throw new ApiError(getResponseMessage(data, 'Request failed.'), {
       status: response.status,
       details: data,
+      retryAfterSec: retryAfterHeader ? Number(retryAfterHeader) : undefined,
     })
   }
 
@@ -225,6 +228,16 @@ export async function completeVideoUpload({ videoId, parts, token, getToken }) {
 
 export async function getUserVideos({ token }) {
   return requestJson('/videos/', {
+    method: 'GET',
+    token,
+  })
+}
+
+// Hybrid semantic + lexical search over the user's own videos, matched on the
+// video's name/filename (that is what the backend embeds). Returns
+// { videos: [...] } in the same shape as getUserVideos' entries, clip_count and all.
+export async function searchVideos({ q, token }) {
+  return requestJson(`/videos/search?q=${encodeURIComponent(q)}`, {
     method: 'GET',
     token,
   })

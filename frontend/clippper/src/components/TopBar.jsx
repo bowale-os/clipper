@@ -14,11 +14,12 @@ function Brand() {
  * The brand in the corner is the only label the signed-in app carries. There is
  * nowhere else to go, so there is no nav — just settings and the account menu.
  */
-function TopBar({ showSettingsLink = true }) {
+function TopBar({ showSettingsLink = true, actions = null }) {
   return (
     <div className="app-top">
       <Brand />
       <div className="app-top-actions">
+        {actions}
         {showSettingsLink ? (
           <Link className="icon-button" to="/settings" aria-label="Settings">
             <SettingsIcon size={17} />
