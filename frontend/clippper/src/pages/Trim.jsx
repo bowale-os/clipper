@@ -34,7 +34,7 @@ function buildValidation({ duration, endSec, startSec }) {
   }
 
   if (Number.isFinite(duration) && endSec > duration) {
-    errors.push(`This stream ends at ${formatClock(duration, { includeHours: true })}.`)
+    errors.push(`This video ends at ${formatClock(duration, { includeHours: true })}.`)
   }
 
   if (startSec >= endSec) {
@@ -82,7 +82,7 @@ function Trim() {
 
   const loadMetadata = useCallback(async () => {
     if (!videoId) {
-      setMetadataError('That stream is missing an id.')
+      setMetadataError('That video is missing an id.')
       setIsMetadataLoading(false)
       return
     }
@@ -93,7 +93,7 @@ function Trim() {
       const data = await runWithToken((token) => getVideoMetadata({ videoId, token }))
       setMetadata(data)
     } catch (error) {
-      setMetadataError(getReadableError(error, 'That stream could not be loaded.'))
+      setMetadataError(getReadableError(error, 'That video could not be loaded.'))
     } finally {
       setIsMetadataLoading(false)
     }
@@ -142,7 +142,7 @@ function Trim() {
         <div className="page-header">
           <div>
             <p className="eyebrow">Cut your own</p>
-            <h1>{isMetadataLoading ? 'Loading…' : metadata?.filename || 'Untitled stream'}</h1>
+            <h1>{isMetadataLoading ? 'Loading…' : metadata?.filename || 'Untitled video'}</h1>
           </div>
           <Link className="button button-quiet" to="/">
             <ArrowLeftIcon size={16} />

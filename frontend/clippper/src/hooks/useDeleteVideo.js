@@ -36,7 +36,7 @@ export function useDeleteVideo({ onDeleted } = {}) {
         onDeleted?.(videoId)
       } catch (caught) {
         // Leave the row armed so the confirm button is still there to retry.
-        setError(getReadableError(caught, 'That stream could not be deleted.'))
+        setError(getReadableError(caught, 'That video could not be deleted.'))
       } finally {
         setDeletingId('')
       }

@@ -1,23 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ApiError, getUserVideos } from '../services/api'
+import { getUserVideos } from '../services/api'
 import { useAuthedApi } from './useAuthedApi'
+import { getReadableError } from '../lib/errors'
 
 const initialState = {
   data: null,
   error: '',
   isLoading: true,
-}
-
-function getReadableError(error) {
-  if (error instanceof ApiError) {
-    return error.status ? `${error.message} (${error.status})` : error.message
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return 'Videos could not be loaded.'
 }
 
 export function useUserVideos() {
@@ -44,7 +33,7 @@ export function useUserVideos() {
     } catch (error) {
       setState({
         data: null,
-        error: getReadableError(error),
+        error: getReadableError(error, 'Videos could not be loaded.'),
         isLoading: false,
       })
     }

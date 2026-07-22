@@ -4,7 +4,7 @@ import { TrashIcon } from './icons'
    it in place. Nothing moves around it, so the row keeps its shape. */
 
 function DeleteVideo({ error, filename, isDeleting, isPending, onAsk, onCancel, onConfirm }) {
-  const name = filename || 'this stream'
+  const name = filename || 'this video'
 
   if (isPending) {
     // A failure swaps the prompt for the reason and leaves both buttons, so the
