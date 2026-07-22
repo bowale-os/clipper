@@ -12,7 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Clip
 from app.workers.contract import TaskContext, WorkCancelled, job_contract
-from app.services.r2_client import download_bytes, download_file, upload_file
+from app.services.r2_client import (
+    download_bytes,
+    download_file,
+    generate_download_url,
+    upload_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,21 @@ FORMATS = {
 DEFAULT_FORMAT = "9:16"
 X264_CRF = "20"           # quality; lower = better + bigger. 20 is a good social default.
 X264_PRESET = "veryfast"  # encode speed vs filesize. Workers are CPU-bound, so favour speed.
+
+# Input options for reading the source straight out of R2 over HTTP instead of pulling the
+# whole file down first — see _source_url. A remote read can drop mid-encode where a local
+# file cannot, so ffmpeg is told to reconnect rather than fail the job over one blip.
+STREAM_INPUT_OPTS = [
+    "-reconnect", "1",
+    "-reconnect_streamed", "1",
+    "-reconnect_delay_max", "5",
+]
+SOURCE_URL_EXPIRES = 6 * 3600   # must outlive the encode, not just the seek
+
+# How far short of the requested length a streamed cut may come back before it is treated
+# as truncated. Some slack is needed because video.duration_sec is itself an estimate, so
+# a clip running to the very end of a source can legitimately land a little short.
+STREAM_SHORTFALL_TOLERANCE = 3.0
 
 # Caption cue shaping. A cue is the group of words shown on screen at one time.
 CAPTION_MAX_CHARS = 42    # longer than this wraps badly on a phone
@@ -270,10 +290,23 @@ def _video_filter(fmt: str, crop: dict | None, srt_filename: str | None) -> str:
     return ",".join(stages)
 
 
-def _cut(workdir: str, src_path: str, out_path: str, start: float, duration: float, vf: str) -> None:
-    """Cut [start, start+duration] out of src_path and re-encode it to out_path.
+def _cut(
+    workdir: str,
+    src: str,
+    out_path: str,
+    start: float,
+    duration: float,
+    vf: str,
+    input_opts: list[str] | None = None,
+) -> None:
+    """Cut [start, start+duration] out of src and re-encode it to out_path.
 
-    `-ss` before `-i` seeks before decoding (fast — it does not walk the whole file), and
+    `src` is a local path or a URL; `input_opts` carries whatever that source needs (see
+    STREAM_INPUT_OPTS) and must sit before `-i`, since ffmpeg applies input options to the
+    input that follows them.
+
+    `-ss` before `-i` seeks before decoding (fast — it does not walk the whole file, and
+    over HTTP it range-requests the window instead of streaming from byte zero), and
     `-t` after `-i` measures the duration from that seek point.
 
     ffmpeg runs with cwd=workdir so the subtitles filter can name the SRT by filename.
@@ -282,8 +315,9 @@ def _cut(workdir: str, src_path: str, out_path: str, start: float, duration: flo
     """
     cmd = [
         "ffmpeg", "-y",
+        *(input_opts or []),
         "-ss", f"{start:.3f}",
-        "-i", src_path,
+        "-i", src,
         "-t", f"{duration:.3f}",
         "-vf", vf,
         "-c:v", "libx264", "-preset", X264_PRESET, "-crf", X264_CRF,
@@ -297,6 +331,69 @@ def _cut(workdir: str, src_path: str, out_path: str, start: float, duration: flo
         # Surface ffmpeg's own words — check=True would raise with them buried on .stderr,
         # and the contract only persists str(e) into job.error.
         raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {proc.stderr[-2000:]}")
+
+
+def _probe_duration(path: str) -> float | None:
+    """Length of a rendered file in seconds, or None if it cannot be determined.
+
+    None means "do not judge this file", not "the file is bad" — ffprobe ships with
+    ffmpeg but the caller must not fail a perfectly good clip over a missing binary.
+    """
+    proc = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", path],
+        capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _cut_from_source(ctx: TaskContext, workdir, src_path, out_path, start, duration, vf) -> str:
+    """Cut the clip, reading the source over HTTP if it can and off disk if it must.
+
+    Streaming is the fast path and the reason a video can auto-render every one of its
+    moments: `-ss` before `-i` makes ffmpeg range-request only the window it needs, so a
+    one-minute clip out of a two-hour source moves tens of megabytes instead of the whole
+    file. Rendering fifteen clips used to mean downloading the source fifteen times.
+
+    It is not universally safe, though. It needs an ffmpeg built with https support, and it
+    needs a container that seeks well remotely — fragmented MP4 and raw .ts do not. So a
+    failed remote read falls back to the download this used to always do, rather than
+    failing the clip. Returns which path produced the file, for the job metrics.
+
+    The output is measured before it is trusted, which matters far more here than it would
+    for a local file: when reconnection finally gives up, ffmpeg does not treat the dead
+    connection as an error. It sees end of input, closes the file it has, and exits 0. That
+    would upload a clip cut short in the middle and mark it ready, which is worse than any
+    failure — nothing anywhere would say something went wrong.
+    """
+    reason = None
+    try:
+        url = generate_download_url(ctx.video.r2_key, expires_in=SOURCE_URL_EXPIRES)
+        _cut(workdir, url, out_path, start, duration, vf, input_opts=STREAM_INPUT_OPTS)
+
+        actual = _probe_duration(out_path)
+        if actual is None or actual >= duration - STREAM_SHORTFALL_TOLERANCE:
+            return "stream"
+
+        reason = f"streamed clip is {actual:.1f}s, expected {duration:.1f}s"
+    except RuntimeError as e:
+        reason = str(e)
+
+    # Not fatal, and logged in full: this is the only place the reason shows up, and the
+    # answer to "why is every render slow again" is in ffmpeg's own words here.
+    logger.warning(
+        "render %s: streaming source failed, falling back to download: %s",
+        ctx.video.id, reason,
+    )
+
+    download_file(ctx.video.r2_key, src_path)
+    _cut(workdir, src_path, out_path, start, duration, vf)
+    return "download"
 
 
 # render only reads the video (r2_key, words_key) and writes its own Clip row, so it
@@ -327,12 +424,12 @@ def render(ctx: TaskContext) -> None:
     started = time.monotonic()
     workdir = tempfile.mkdtemp()
     suffix = os.path.splitext(ctx.video.r2_key)[1] or ".mp4"
-    src_path = os.path.join(workdir, f"source{suffix}")   # INPUT  — the downloaded original
+    src_path = os.path.join(workdir, f"source{suffix}")   # INPUT  — only if we have to download
     out_path = os.path.join(workdir, "clip.mp4")          # OUTPUT — ffmpeg writes here
 
     try:
         # Captions and the filter come first: both are cheap, and both can reject the
-        # job. Better to fail here than after pulling down a multi-gigabyte source.
+        # job. Better to fail here than partway through reading the source.
         srt_path = None
         if params.get("captions"):
             srt_path = _build_srt(ctx, workdir, start, end)
@@ -343,9 +440,9 @@ def render(ctx: TaskContext) -> None:
 
         vf = _video_filter(fmt, params.get("crop"), SRT_FILENAME if srt_path else None)
 
-        download_file(ctx.video.r2_key, src_path)
-        logger.info("render %s: source downloaded, cutting clip=%s", ctx.video.id, clip_id)
-        _cut(workdir, src_path, out_path, start, duration, vf)
+        source = _cut_from_source(
+            ctx, workdir, src_path, out_path, start, duration, vf
+        )
 
         out_bytes = os.path.getsize(out_path)
         out_key = f"clips/{clip_id}.mp4"
@@ -361,10 +458,14 @@ def render(ctx: TaskContext) -> None:
     ctx.metrics.update({
         "clip_id": str(clip_id),
         "format": fmt,
+        "source": source,
         "captions": srt_path is not None,
         "duration_sec": round(duration, 3),
         "output_bytes": out_bytes,
         "render_ms": int((time.monotonic() - started) * 1000),
     })
 
-    logger.info("render %s: done in %dms, clip=%s", ctx.video.id, ctx.metrics["render_ms"], clip_id)
+    logger.info(
+        "render %s: done in %dms, clip=%s source=%s",
+        ctx.video.id, ctx.metrics["render_ms"], clip_id, source,
+    )

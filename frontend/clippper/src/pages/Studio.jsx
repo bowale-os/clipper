@@ -113,21 +113,17 @@ function Studio() {
     }
   }, [activeVideoId, moments, seed, serverClips])
 
-  // Moments with a finished clip behind them lead the grid; everything else,
-  // including clips still rendering or ones that failed, stays below. A clip row
-  // existing is not the same as a clip you can watch.
-  const { done, rest } = useMemo(() => {
-    const withClip = new Set(
+  // Tiles you can actually watch. Two things this has to get right: a clip row is not
+  // a clip until it has a file, and a moment can own more than one clip row, because
+  // re-rendering it with captions or another shape adds a row rather than replacing
+  // one. Counting rows would say "13 of 12 ready" as soon as someone re-cuts a tile.
+  const readyCount = useMemo(() => {
+    const readyMoments = new Set(
       serverClips
-        .filter((clip) => clip.status === 'ready' && clip.url)
-        .map((clip) => clip.moment_id)
-        .filter(Boolean),
+        .filter((clip) => clip.status === 'ready' && clip.url && clip.moment_id)
+        .map((clip) => clip.moment_id),
     )
-
-    return {
-      done: moments.filter((moment) => withClip.has(moment.id)),
-      rest: moments.filter((moment) => !withClip.has(moment.id)),
-    }
+    return moments.filter((moment) => readyMoments.has(moment.id)).length
   }, [moments, serverClips])
 
   // Something is still cooking, so keep the list warm without a refresh button.
@@ -214,9 +210,6 @@ function Studio() {
     )
   }
 
-  // Only clips with a file behind them. Counting every moment here promised more
-  // than the screen was actually handing over.
-  const readyCount = serverClips.filter((clip) => clip.status === 'ready').length
 
   return (
     <div className="app-shell">
@@ -344,57 +337,29 @@ function Studio() {
               </div>
             ) : moments.length ? (
               <>
-                {done.length ? (
-                  <>
-                    <div className="section-head">
-                      <h2>Ready</h2>
-                      <span className="section-note">
-                        {done.length === 1 ? 'One clip is' : `${done.length} clips are`} done and
-                        ready to post.
-                      </span>
-                    </div>
-                    <div className="clip-grid">
-                      {done.map((moment, index) => (
-                        <ClipTile
-                          format={
-                            renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format
-                          }
-                          isTop={index === 0}
-                          key={getMomentKey(moment, activeVideoId)}
-                          moment={moment}
-                          onDownload={handleDownload}
-                          onOpen={setOpenMoment}
-                          render={renders[getMomentKey(moment, activeVideoId)]}
-                        />
-                      ))}
-                    </div>
-                  </>
-                ) : null}
-
-                {rest.length ? (
-                  <>
-                    <div className="section-head">
-                      <h2>Also worth a look</h2>
-                      <span className="section-note">
-                        We spotted these too. Tap one to make it.
-                      </span>
-                    </div>
-                    <div className="clip-grid">
-                      {rest.map((moment) => (
-                        <ClipTile
-                          format={
-                            renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format
-                          }
-                          key={getMomentKey(moment, activeVideoId)}
-                          moment={moment}
-                          onDownload={handleDownload}
-                          onOpen={setOpenMoment}
-                          render={renders[getMomentKey(moment, activeVideoId)]}
-                        />
-                      ))}
-                    </div>
-                  </>
-                ) : null}
+                <div className="section-head">
+                  <h2>Your clips</h2>
+                  <span className="section-note">
+                    {readyCount === moments.length
+                      ? readyCount === 1
+                        ? 'One clip, ready to post.'
+                        : `All ${readyCount} are ready to post.`
+                      : `${readyCount} of ${moments.length} ready. The rest are on the way.`}
+                  </span>
+                </div>
+                <div className="clip-grid">
+                  {moments.map((moment, index) => (
+                    <ClipTile
+                      format={renders[getMomentKey(moment, activeVideoId)]?.format || prefs.format}
+                      isTop={index === 0}
+                      key={getMomentKey(moment, activeVideoId)}
+                      moment={moment}
+                      onDownload={handleDownload}
+                      onOpen={setOpenMoment}
+                      render={renders[getMomentKey(moment, activeVideoId)]}
+                    />
+                  ))}
+                </div>
               </>
             ) : (
               <EmptyState

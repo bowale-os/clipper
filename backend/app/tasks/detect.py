@@ -36,10 +36,10 @@ SNAP_WINDOW=3.0     # max seconds a boundary search may travel from the cited ti
 LOUD_DB_OVER_MEDIAN = 8.0
 LOUD_MIN_DUR = 1.0
 
-# How many of the detected moments render without the user asking. Every render
-# re-downloads the whole source, so rendering all MAX_MOMENTS would cost far more than
-# a user typically uses. The rest stay as moments they can render on demand.
-AUTO_RENDER_TOP = 3
+# Every detected moment renders without the user asking — MAX_MOMENTS is the only cap.
+# This used to be a top-3 slice because each render pulled down the whole source, so
+# fifteen clips meant fifteen full downloads. render now reads its window straight out of
+# R2 over HTTP, so the cost is roughly one clip's worth of bytes per clip.
 AUTO_RENDER_CAPTIONS = False
 
 SYSTEM_INSTRUCTIONS = f"""You find the most clip-worthy moments in a video from its \
@@ -258,14 +258,14 @@ def _snap_moment(raw_start, raw_end, boundaries, silences, video_end=None):
 
 
 def _queue_auto_renders(ctx: TaskContext, db, moments: list[Moment]) -> list[Clip]:
-    """Create queued Clip rows for the strongest moments and schedule their renders.
+    """Create queued Clip rows for every moment and schedule their renders.
 
     The Clip row is written here rather than by the render job so the frontend can list
     every pending clip the instant detect commits — one that hasn't been picked up yet
     reads as "rendering" on screen instead of only appearing once its file exists.
 
-    Ordering is by the blended `final` score, so the clips that fill the screen first are
-    the ones most worth watching.
+    Ordering is by the blended `final` score. Every moment gets a clip either way, but the
+    queue is worked roughly in order, so the ones most worth watching land first.
 
     Takes the caller's session: the clips belong in the same transaction as the moments
     they point at, so a crash cannot leave clips referencing moments that were never
@@ -274,7 +274,7 @@ def _queue_auto_renders(ctx: TaskContext, db, moments: list[Moment]) -> list[Cli
     ranked = sorted(moments, key=lambda m: m.scores["final"], reverse=True)
 
     clips = []
-    for moment in ranked[:AUTO_RENDER_TOP]:
+    for moment in ranked:
         moment.status = "kept"
         clip = Clip(
             moment_id=moment.id,
