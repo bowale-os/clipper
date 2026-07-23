@@ -3,11 +3,11 @@
    `final` is the blended overall score, `hook` is how strong the opening is. The other
    ratings exist on the moment but are deliberately not offered here. */
 
-// One entry per button. `note` is the plain line shown under the control so the active
-// order is spelled out rather than left for the reader to infer from the grid.
+// One entry per button. The "Sorted by" label beside the toggle plus the pressed
+// button name the active order, so no separate spelled-out line is needed.
 export const MOMENT_SORTS = [
-  { key: 'final', label: 'Overall score', note: 'Sorted by overall score.' },
-  { key: 'hook', label: 'Hook', note: 'Sorted by hook.' },
+  { key: 'final', label: 'Overall score' },
+  { key: 'hook', label: 'Hook' },
 ]
 
 export const DEFAULT_MOMENT_SORT = 'final'

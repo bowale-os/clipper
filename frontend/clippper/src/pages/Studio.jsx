@@ -17,7 +17,7 @@ import { useClipRenders, getMomentKey } from '../hooks/useClipRenders'
 import { usePrefs } from '../hooks/usePrefs'
 import { flattenVideos } from '../lib/videos'
 import { getVideoId } from '../lib/format'
-import { DEFAULT_MOMENT_SORT, MOMENT_SORTS, sortMoments } from '../lib/moments'
+import { DEFAULT_MOMENT_SORT, sortMoments } from '../lib/moments'
 
 const REFRESH_MS = 15000
 const WORKING = ['uploading', 'uploaded', 'processing']
@@ -69,7 +69,6 @@ function Studio() {
 
   const rawMoments = useMemo(() => momentsData?.moments || [], [momentsData])
   const moments = useMemo(() => sortMoments(rawMoments, sort), [rawMoments, sort])
-  const activeSort = MOMENT_SORTS.find((option) => option.key === sort) || MOMENT_SORTS[0]
 
   // Each clip's 1-based rank in the overall-score order — the view every video opens on.
   // When another order is showing, a tile whose rank here differs shows "was Nth", which is
@@ -245,12 +244,7 @@ function Studio() {
               : `${readyCount} of ${moments.length} ready. The rest are on the way.`}
           </span>
         </div>
-        {moments.length > 1 ? (
-          <>
-            <MomentSort onChange={setSort} value={sort} />
-            <p className="sort-note">{activeSort.note}</p>
-          </>
-        ) : null}
+        {moments.length > 1 ? <MomentSort onChange={setSort} value={sort} /> : null}
         <div className="clip-grid">
           {moments.map((moment, index) => {
             const rank = overallRank.get(moment.id)
@@ -296,7 +290,7 @@ function Studio() {
             {isReady ? (
               <div className="section-actions">
                 <Link className="section-link" to={`/trim/${encodeURIComponent(videoId)}`}>
-                  Cut your own
+                  Cut manually
                 </Link>
                 <DeleteVideo
                   error={remove.error}
