@@ -7,6 +7,7 @@ import ClipPreview from '../components/ClipPreview'
 import LiveStatus from '../components/LiveStatus'
 import EmptyState from '../components/EmptyState'
 import DeleteVideo from '../components/DeleteVideo'
+import MomentSort from '../components/MomentSort'
 import { ArrowLeftIcon, ScissorsIcon } from '../components/icons'
 import { useUserVideos } from '../hooks/useUserVideos'
 import { useVideoMoments } from '../hooks/useVideoMoments'
@@ -16,6 +17,7 @@ import { useClipRenders, getMomentKey } from '../hooks/useClipRenders'
 import { usePrefs } from '../hooks/usePrefs'
 import { flattenVideos } from '../lib/videos'
 import { getVideoId } from '../lib/format'
+import { DEFAULT_MOMENT_SORT, MOMENT_SORTS, sortMoments } from '../lib/moments'
 
 const REFRESH_MS = 15000
 const WORKING = ['uploading', 'uploaded', 'processing']
@@ -34,6 +36,14 @@ function Studio() {
   const { renders, start, seed } = useClipRenders()
 
   const [openMoment, setOpenMoment] = useState(null)
+
+  // The chosen order is stored against the video it was chosen for. Reading it back only
+  // when the stored video matches the one on screen means every video opens on the overall
+  // score without an effect resetting anything — the sort is a look you take on one video,
+  // not a setting that follows you around and later reads as a wrong ranking.
+  const [sortChoice, setSortChoice] = useState({ videoId, key: DEFAULT_MOMENT_SORT })
+  const sort = sortChoice.videoId === videoId ? sortChoice.key : DEFAULT_MOMENT_SORT
+  const setSort = useCallback((key) => setSortChoice({ videoId, key }), [videoId])
 
   const videos = useMemo(() => flattenVideos(data), [data])
   const video = useMemo(
@@ -57,7 +67,18 @@ function Studio() {
 
   const { clips: serverClips } = useVideoClips(isReady ? videoId : '')
 
-  const moments = useMemo(() => momentsData?.moments || [], [momentsData])
+  const rawMoments = useMemo(() => momentsData?.moments || [], [momentsData])
+  const moments = useMemo(() => sortMoments(rawMoments, sort), [rawMoments, sort])
+  const activeSort = MOMENT_SORTS.find((option) => option.key === sort) || MOMENT_SORTS[0]
+
+  // Each clip's 1-based rank in the overall-score order — the view every video opens on.
+  // When another order is showing, a tile whose rank here differs shows "was Nth", which is
+  // the proof the two orders actually disagree instead of a reorder that changed nothing.
+  // Pure from the data, so it just falls out correct as clips finish rendering and arrive.
+  const overallRank = useMemo(() => {
+    const byScore = sortMoments(rawMoments, DEFAULT_MOMENT_SORT)
+    return new Map(byScore.map((moment, index) => [moment.id, index + 1]))
+  }, [rawMoments])
 
   // Hand the already-rendered clips to the render store, keyed the way the tiles
   // are, so a clip detect finished on its own shows as ready straight away.
@@ -224,18 +245,34 @@ function Studio() {
               : `${readyCount} of ${moments.length} ready. The rest are on the way.`}
           </span>
         </div>
+        {moments.length > 1 ? (
+          <>
+            <MomentSort onChange={setSort} value={sort} />
+            <p className="sort-note">{activeSort.note}</p>
+          </>
+        ) : null}
         <div className="clip-grid">
-          {moments.map((moment, index) => (
-            <ClipTile
-              format={renders[getMomentKey(moment, videoId)]?.format || prefs.format}
-              isTop={index === 0}
-              key={getMomentKey(moment, videoId)}
-              moment={moment}
-              onDownload={handleDownload}
-              onOpen={setOpenMoment}
-              render={renders[getMomentKey(moment, videoId)]}
-            />
-          ))}
+          {moments.map((moment, index) => {
+            const rank = overallRank.get(moment.id)
+            // Only when a different order is showing, and only if this clip actually sits
+            // somewhere other than its overall-score rank.
+            const movedFrom =
+              sort !== DEFAULT_MOMENT_SORT && rank && rank !== index + 1 ? rank : undefined
+
+            return (
+              <ClipTile
+                format={renders[getMomentKey(moment, videoId)]?.format || prefs.format}
+                isTop={index === 0}
+                key={getMomentKey(moment, videoId)}
+                moment={moment}
+                onDownload={handleDownload}
+                onOpen={setOpenMoment}
+                previousPlace={movedFrom}
+                render={renders[getMomentKey(moment, videoId)]}
+                scoreKey={sort}
+              />
+            )
+          })}
         </div>
       </>
     )

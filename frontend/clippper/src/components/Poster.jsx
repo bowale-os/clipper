@@ -6,6 +6,15 @@ const shapeClass = {
   '16:9': 'is-wide',
 }
 
+// 1 -> "1st", 2 -> "2nd", 4 -> "4th". Only ever used on small clip counts, so the teens
+// exception the general rule needs never comes up, but it's cheap to be correct.
+function ordinal(n) {
+  const tens = n % 100
+  const ones = n % 10
+  const suffix = tens >= 11 && tens <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][ones] || 'th'
+  return `${n}${suffix}`
+}
+
 /**
  * Stays solid black until the backend can hand back a still frame from the
  * clip. The title sits on it like a burned-in caption so the tile reads as the
@@ -17,7 +26,9 @@ function Poster({
   format = '9:16',
   isTop = false,
   onClick,
+  previousPlace,
   score,
+  scoreLabel = '',
   showFormat = true,
 }) {
   const Tag = onClick ? 'button' : 'div'
@@ -35,8 +46,12 @@ function Poster({
           short tile in a row of tall ones. */}
       <span className="poster-frame">
         {score != null ? (
-          <span className={isTop ? 'poster-score is-top' : 'poster-score'}>{score}</span>
+          <span className={isTop ? 'poster-score is-top' : 'poster-score'}>
+            {score}
+            {scoreLabel ? <em>{scoreLabel}</em> : null}
+          </span>
         ) : null}
+        {previousPlace ? <span className="poster-moved">was {ordinal(previousPlace)}</span> : null}
         {showFormat ? <span className="poster-format">{format}</span> : null}
         <span className="poster-play">
           <PlayIcon />

@@ -203,6 +203,27 @@
   flex-wrap: wrap;
 }
 
+/* The order toggle over the clip grid, plus the plain line naming the active order. */
+.sort-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin: 0 0 var(--space-2);
+}
+
+.sort-label {
+  font-size: var(--text-sm);
+  color: var(--ash);
+  flex: none;
+}
+
+.sort-note {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ash);
+}
+
 /* ============ Delete ============ */
 
 .delete-btn {
@@ -660,6 +681,9 @@
   top: 9px;
   left: 9px;
   z-index: 2;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
   padding: 2px 8px;
   border: var(--hairline) solid var(--fuchsia);
   border-radius: 4px;
@@ -673,6 +697,32 @@
 .poster-score.is-top {
   background: var(--fuchsia);
   color: var(--white);
+}
+
+/* Names the rating the number belongs to (e.g. "hook") when the grid is sorted by
+   something other than the overall score, so the badge explains the order it's in. Sans
+   face and a touch quieter, so it reads as a word beside the mono number, not part of it. */
+.poster-score em {
+  font-family: var(--font-sans);
+  font-style: normal;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+/* Where the clip sat before the last sort flip. Stacked under the format tag it shares the
+   corner with, and deliberately faint: it's evidence the reorder did something, not an alert. */
+.poster-moved {
+  position: absolute;
+  top: 27px;
+  right: 9px;
+  z-index: 2;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--cream);
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
 }
 
 .poster-format {
