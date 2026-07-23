@@ -163,6 +163,7 @@
 
 .section-head h2 {
   margin: 0;
+  min-width: 0;
   font-size: var(--text-xs);
   font-weight: 450;
   letter-spacing: 0.1em;
@@ -200,28 +201,25 @@
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  flex-wrap: wrap;
+  /* Never let the title squeeze these onto their own stacked column: the row stays
+     intact on one line and the long filename yields space (see h2 min-width) instead. */
+  flex-shrink: 0;
 }
 
-/* The order toggle over the clip grid, plus the plain line naming the active order. */
+/* The order toggle over the clip grid. The "Sorted by" label plus the pressed
+   button name the active order on their own, so no separate line sits under it. */
 .sort-row {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   flex-wrap: wrap;
-  margin: 0 0 var(--space-2);
+  margin: 0 0 var(--space-4);
 }
 
 .sort-label {
   font-size: var(--text-sm);
   color: var(--ash);
   flex: none;
-}
-
-.sort-note {
-  margin: 0 0 var(--space-4);
-  font-size: var(--text-sm);
-  color: var(--ash);
 }
 
 /* ============ Delete ============ */
@@ -823,10 +821,6 @@
   color: var(--ash);
   cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.segmented button:hover:not(:disabled) {
-  color: var(--void);
 }
 
 .segmented button[aria-pressed='true'] {
