@@ -3,14 +3,11 @@ import { getVideoMoments } from '../services/api'
 import { useAuthedApi } from './useAuthedApi'
 import { getReadableError } from '../lib/errors'
 
-function getFinalScore(moment) {
-  const value = Number(moment?.scores?.final)
-  return Number.isFinite(value) ? value : 0
-}
-
 /**
- * Moments for one video, best first — that ordering is the whole point of the
- * grid. Passing a falsy videoId parks the hook rather than firing a request.
+ * Moments for one video, in whatever order the server returns them. Studio owns the
+ * ordering now — it lets the viewer switch between overall score and hook — so this hook
+ * stays out of it and just hands back the raw list. Passing a falsy videoId parks the
+ * hook rather than firing a request.
  */
 export function useVideoMoments(videoId) {
   const { runWithToken } = useAuthedApi()
@@ -26,9 +23,7 @@ export function useVideoMoments(videoId) {
       setState((current) => ({ ...current, error: '', isLoading: true }))
       const data = await runWithToken((token) => getVideoMoments({ token, videoId }))
 
-      const moments = Array.isArray(data?.moments)
-        ? [...data.moments].sort((a, b) => getFinalScore(b) - getFinalScore(a))
-        : []
+      const moments = Array.isArray(data?.moments) ? data.moments : []
 
       setState({ data: { ...data, moments }, error: '', isLoading: false })
     } catch (error) {
