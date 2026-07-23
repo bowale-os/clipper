@@ -27,6 +27,7 @@ function GlideSearch({ videos = [], variant = 'inline' }) {
   const navigate = useNavigate()
   const inputRef = useRef(null)
   const [open, setOpen] = useState(false)
+  const [closing, setClosing] = useState(false)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
 
@@ -40,10 +41,22 @@ function GlideSearch({ videos = [], variant = 'inline' }) {
   const shown = hasQuery ? results : recents
 
   const close = useCallback(() => {
+    // Overlay plays an exit animation, so keep it mounted until the motion ends.
+    // Inline has no exit beat and can just snap shut.
+    if (variant === 'overlay') {
+      setClosing(true)
+      window.setTimeout(() => {
+        setOpen(false)
+        setClosing(false)
+        setQuery('')
+        setActive(0)
+      }, 500)
+      return
+    }
     setOpen(false)
     setQuery('')
     setActive(0)
-  }, [])
+  }, [variant])
 
   const go = useCallback(
     (video) => {
@@ -167,7 +180,12 @@ function GlideSearch({ videos = [], variant = 'inline' }) {
         </button>
 
         {open ? (
-          <div className="glide-overlay" role="dialog" aria-modal="true" aria-label="Search your videos">
+          <div
+            className={`glide-overlay${closing ? ' is-closing' : ''}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Search your videos"
+          >
             <div className="glide-scrim is-static" onClick={close} />
             <div className="glide-float">
               <div className="glide-bar">

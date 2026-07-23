@@ -1557,6 +1557,34 @@
   }
 }
 
+/* Dismiss is one quick beat, not the two-beat entrance run in reverse: the
+   scrim fades and the float lifts back up as it goes. */
+.glide-overlay.is-closing .glide-scrim.is-static {
+  animation: glide-scrim-out 0.15s ease-in both;
+}
+
+.glide-overlay.is-closing .glide-float {
+  animation: glide-lift-out 0.15s cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.glide-overlay.is-closing .glide-float .glide-bar,
+.glide-overlay.is-closing .glide-float .glide-panel {
+  animation: none;
+}
+
+@keyframes glide-scrim-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes glide-lift-out {
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .glide-scrim,
   .glide-wrap,
@@ -1573,5 +1601,9 @@
   .glide-float .glide-bar,
   .glide-float .glide-panel {
     animation: none;
+  }
+
+  .glide-overlay.is-closing .glide-float {
+    animation: glide-scrim-out 0.12s ease both;
   }
 }
