@@ -3,6 +3,7 @@ import logging
 import math
 import random
 import statistics
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select, update
@@ -49,6 +50,35 @@ LOUD_DB_OVER_MEDIAN = 8.0
 LOUD_MIN_DUR = 1.0
 OVERLAPPING_RATIO = 0.4
 SECTION_WORKERS = 4
+
+# ─── FREE-TIER THROTTLE ──────────────────────────────────────────────────────────────
+# WHY THIS EXISTS: Gemini's FREE tier caps gemini-2.5-flash at 5 requests/minute per model.
+# detect fires 1 segment call + up to MAX_SECTIONS section calls across SECTION_WORKERS
+# threads, which blows past 5 RPM instantly and 429s the whole job (RESOURCE_EXHAUSTED).
+# This gate spaces every Gemini request GEMINI_MIN_INTERVAL_S apart, across ALL workers, so
+# we stay under the free-tier limit. It is a workaround for being on the free tier, nothing
+# more.
+#
+# TO REMOVE ONCE ON A PAID TIER: set GEMINI_MIN_INTERVAL_S = 0 (Tier 1 = ~1000 RPM, so
+# pacing only makes detect slower for no benefit). At interval 0 the gate is a no-op and you
+# can delete this whole block plus the _throttle() call in _gemini_with_retry if you want it
+# gone entirely. Search "FREE-TIER THROTTLE" to find every piece.
+GEMINI_MIN_INTERVAL_S = 13.0
+_throttle_lock = threading.Lock()
+_last_call_at = 0.0
+
+
+def _throttle() -> None:
+    """Block until at least GEMINI_MIN_INTERVAL_S has passed since the last Gemini request,
+    counting requests from every section worker. See the FREE-TIER THROTTLE note above."""
+    if GEMINI_MIN_INTERVAL_S <= 0:
+        return
+    global _last_call_at
+    with _throttle_lock:
+        wait = _last_call_at + GEMINI_MIN_INTERVAL_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_at = time.monotonic()
 # Every kept moment renders without the user asking. This used to be a top-3 slice because
 # each render pulled down the whole source, so fifteen clips meant fifteen full downloads.
 # render now reads its window straight out of R2 over HTTP, so the cost is roughly one
@@ -216,6 +246,7 @@ def _gemini_with_retry(call):
     """
     for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
         try:
+            _throttle()   # FREE-TIER THROTTLE: pace requests under the 5 RPM free-tier cap
             return call()
         except errors.APIError as e:
             if e.code not in GEMINI_RETRY_CODES or attempt == GEMINI_MAX_ATTEMPTS:
