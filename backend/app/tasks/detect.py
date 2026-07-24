@@ -1,9 +1,13 @@
 import json
 import logging
+import math
+import random
 import statistics
+import time
+from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select, update
 from pydantic import BaseModel
-from google.genai import types
+from google.genai import errors, types
 
 from app.db.models import Clip, RankingRun, Transcript, Moment, VideoStatus
 from app.services.gemini_client import client
@@ -19,8 +23,16 @@ GEMINI_MODEL = "gemini-2.5-flash"
 # before trusting est_cost_usd — these drift and feed billing rollups.
 GEMINI_IN_PER_MTOK = 0.30
 GEMINI_OUT_PER_MTOK = 2.50
-PROMPT_VERSION = "detect-v2"
-MAX_MOMENTS=20
+GEMINI_MAX_ATTEMPTS = 3
+# Codes worth a local retry: 429 (rate limit) and the transient 5xx family Gemini returns
+# under load. A 503 here is what sank a whole detect job on 2026-07-18.
+GEMINI_RETRY_CODES = {429, 500, 502, 503, 504}
+PROMPT_VERSION = "detect-v3"
+MAX_MOMENTS_PER_SECTION = 3
+MAX_SECTIONS = 40
+MAX_SECTION_LEN = 300.0     # a section covers at most 5 min, so no long stretch competes
+                            # for one section's 3-clip budget; enforced by splitting after
+MAX_TOTAL_MOMENTS = 60
 MIN_LEN=20
 MAX_LEN=120
 SENT_GAP=0.6
@@ -35,12 +47,26 @@ SILENCE_EXTEND=2.0
 SNAP_WINDOW=3.0     # max seconds a boundary search may travel from the cited timestamp
 LOUD_DB_OVER_MEDIAN = 8.0
 LOUD_MIN_DUR = 1.0
-
-# Every detected moment renders without the user asking — MAX_MOMENTS is the only cap.
-# This used to be a top-3 slice because each render pulled down the whole source, so
-# fifteen clips meant fifteen full downloads. render now reads its window straight out of
-# R2 over HTTP, so the cost is roughly one clip's worth of bytes per clip.
+OVERLAPPING_RATIO = 0.4
+SECTION_WORKERS = 4
+# Every kept moment renders without the user asking. This used to be a top-3 slice because
+# each render pulled down the whole source, so fifteen clips meant fifteen full downloads.
+# render now reads its window straight out of R2 over HTTP, so the cost is roughly one
+# clip's worth of bytes per clip.
 AUTO_RENDER_CAPTIONS = False
+
+SECTION_SYSTEM_INSTRUCTIONS = f"""You split a timestamped video transcript into consecutive \
+topical sections that together cover the whole video. Each section is one coherent subject or \
+segment of the conversation — a place a viewer would say "now they're talking about X".
+
+Rules:
+- start/end MUST be timestamps that appear in the script (use the [h:mm:ss] markers).
+- Sections run back to back and tile the whole timeline: each section's start is the previous \
+section's end. Do not leave gaps and do not overlap.
+- Keep each section under {MAX_SECTION_LEN / 60:.0f} minutes. Split a long topic into parts if it runs longer.
+- Return AT MOST {MAX_SECTIONS} sections. Prefer a handful of meaningful sections over many tiny ones.
+- topic: a short phrase naming what the section is about.
+Return only what the schema asks for."""
 
 SYSTEM_INSTRUCTIONS = f"""You find the most clip-worthy moments in a video from its \
 timestamped transcript. The script below interleaves spoken lines with energy markers:
@@ -48,7 +74,7 @@ timestamped transcript. The script below interleaves spoken lines with energy ma
   <SILENCE Ns>          a pause of N seconds (dramatic beat, or dead air)
   <LOUD +NdB a-b>       a burst of loud audio between a and b (laughter, reaction, emphasis)
 
-Return AT MOST {MAX_MOMENTS} moments, each a self-contained clip that would work posted alone.
+Return AT MOST {MAX_MOMENTS_PER_SECTION} moments, each a self-contained clip that would work posted alone.
 
 Rules:
 - start/end MUST be timestamps that appear in the script (use the [h:mm:ss] markers).
@@ -81,6 +107,11 @@ class MomentOut(BaseModel):
     shareability: float
     visual: float
     transcript_excerpt: str
+
+class SectionOut(BaseModel):
+    start: str
+    end: str
+    topic: str
 
 
 
@@ -174,6 +205,77 @@ def _loud_spikes(rms):
         if e - s >= LOUD_MIN_DUR
     ]
 
+def _gemini_with_retry(call):
+    """Run a Gemini call, retrying transient throttle/5xx locally before letting it abort
+    the job. `call` is a zero-arg callable so the request is re-issued fresh each attempt.
+
+    detect fans out to one segment call plus up to MAX_SECTIONS section calls, so any single
+    503 would otherwise sink the whole job and force RQ to re-run all of them. Retrying just
+    the one throttled call keeps the other sections' work; only a call still failing after
+    GEMINI_MAX_ATTEMPTS falls through to the whole-job retry (a genuinely saturated provider).
+    """
+    for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
+        try:
+            return call()
+        except errors.APIError as e:
+            if e.code not in GEMINI_RETRY_CODES or attempt == GEMINI_MAX_ATTEMPTS:
+                raise
+            # Exponential base plus jitter, so the concurrent section calls do not all wake
+            # and re-hit the provider in lockstep while it is still saturated.
+            delay = 2 ** attempt + random.uniform(0, 1)
+            logger.warning("detect: gemini %s, retry %d/%d in %.1fs",
+                           e.code, attempt, GEMINI_MAX_ATTEMPTS, delay)
+            time.sleep(delay)
+
+
+def _segment_transcript(full_script) -> tuple[list[SectionOut], object]:
+    """Pass 1: split the whole annotated script into consecutive topical sections that tile
+    the timeline. Cheap output (just boundaries), so this is one call over the full script."""
+    response = _gemini_with_retry(lambda: client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=f"{SECTION_SYSTEM_INSTRUCTIONS}\n\n---\n\n{full_script}",
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=list[SectionOut],
+            temperature=0.2,
+        ),
+    ))
+    if response.parsed is None:
+        raise RuntimeError(f"Gemini returned no parseable sections: {response.text!r}")
+    return response.parsed, response.usage_metadata
+
+
+def _cap_section_lengths(sections, max_len):
+    """Guarantee no section is longer than max_len by splitting oversized ones into even,
+    consecutive sub-windows. The prompt asks the model for this, but it will not obey
+    reliably, and a too-long section would squeeze a big stretch into one section's clip
+    budget. Sub-windows keep the parent topic and tile the same [start, end]."""
+    capped: list[SectionOut] = []
+    for sec in sections:
+        start, end = _parse_ts(sec.start), _parse_ts(sec.end)
+        span = end - start
+        if span <= max_len:
+            capped.append(sec)
+            continue
+        n = math.ceil(span / max_len)
+        step = span / n
+        for i in range(n):
+            sub_start = start + i * step
+            sub_end = end if i == n - 1 else start + (i + 1) * step
+            capped.append(SectionOut(
+                start=_fmt_ts(sub_start), end=_fmt_ts(sub_end), topic=sec.topic
+            ))
+    return capped
+
+
+def _slice_annotated(segments, features, start, end):
+    seg_slice = [s for s in segments if start <= float(s["start"]) <= end]
+    feat_slice = {
+        "silences": [x for x in features.get("silences", []) if start <= float(x["silence_start"]) <= end],
+        "rms":      [r for r in features.get("rms", [])      if start <= float(r["t"]) <= end],
+    }
+    return _build_annotated(seg_slice, feat_slice)   # <-- still used
+
 
 def _build_annotated(segments, features) -> str:
     """Merge speech, silences, and loud spikes into one time-sorted, timestamped script
@@ -202,6 +304,35 @@ def _build_annotated(segments, features) -> str:
 
     events.sort(key=lambda e: (e[0], e[1]))
     return "\n".join(line for _, _, line in events)
+
+def _extract(prompt_inject, topic=None) -> tuple[list[MomentOut], object | None]:
+    """The clip-finding Gemini call over one annotated script. Returns (moments, usage);
+    usage is None when there was nothing to send (an empty slice), so the caller skips it
+    in the token tally without a wasted request."""
+    if not prompt_inject.strip():
+        return [], None
+
+    focus = f"\n\nThis section is about: {topic}." if topic else ""
+    response = _gemini_with_retry(lambda: client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=f"{SYSTEM_INSTRUCTIONS}{focus}\n\n---\n\n{prompt_inject}",
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=list[MomentOut],
+            temperature=0.4,
+        ),
+    ))
+    if response.parsed is None:
+        return [], response.usage_metadata
+    return response.parsed, response.usage_metadata
+
+
+def _extract_section(section, segments, features) -> tuple[list[MomentOut], object | None]:
+    """Pass 2: mine a single section for clip-worthy moments, seeing only its own slice."""
+    start = _parse_ts(section.start)
+    end = _parse_ts(section.end)
+    prompt_inject = _slice_annotated(segments, features, start, end)
+    return _extract(prompt_inject, topic=section.topic)
 
 
 def _sentence_boundaries(words):
@@ -255,6 +386,74 @@ def _snap_moment(raw_start, raw_end, boundaries, silences, video_end=None):
         return padded_start, padded_end
 
     return raw_start, raw_end   # nothing snapped stayed in bounds; keep the citation
+
+def _dedup_overlap(moments, ratio) -> tuple[list, int]:
+    """Keep distinct clips, drop redundant ones. Greedy in score order: the highest-scored
+    clip claims its span, and any later clip that shares more than `ratio` of the shorter
+    clip's length with something already kept is discarded as a duplicate.
+
+    Dividing the shared seconds by the *shorter* clip is deliberate - a short clip sitting
+    entirely inside a long one is a near-total duplicate even though it covers only a slice
+    of the long clip's timeline. Caps the survivors at MAX_TOTAL_MOMENTS so a long video
+    cannot fan out an unbounded render load; because the scan is score-ordered, the cap
+    trims the weakest tail. Returns (survivors, dropped_count).
+    """
+    ranked = sorted(moments, key=lambda m: m.scores["final"], reverse=True)
+
+    kept: list = []
+    dropped = 0
+    for m in ranked:
+        m_start, m_end = float(m.start_sec), float(m.end_sec)
+        m_dur = m_end - m_start
+
+        duplicate = False
+        for k in kept:
+            k_start, k_end = float(k.start_sec), float(k.end_sec)
+            overlap = max(0.0, min(m_end, k_end) - max(m_start, k_start))
+            shorter = min(m_dur, k_end - k_start)
+            if shorter > 0 and overlap / shorter > ratio:
+                duplicate = True
+                break
+
+        if duplicate or len(kept) >= MAX_TOTAL_MOMENTS:
+            dropped += 1
+            continue
+        kept.append(m)
+
+    return kept, dropped
+
+
+def _coverage_metrics(moments, duration_sec) -> tuple[float, float]:
+    """How much of the timeline the kept clips cover, and the largest uncovered gap.
+
+    Coverage is the union of clip spans (overlapping clips merged so shared seconds are not
+    double-counted) over the video length. The gap is the longest continuous uncovered
+    stretch anywhere - the run-up before the first clip, a dead zone between clips, or the
+    tail after the last one. A big gap near the end is the tell that the back half was
+    under-mined. Pure arithmetic on the final snapped start/end.
+    """
+    duration = float(duration_sec or 0.0)
+    if not duration or not moments:
+        return 0.0, round(duration, 1)
+
+    spans = sorted((float(m.start_sec), float(m.end_sec)) for m in moments)
+    merged: list[list[float]] = []
+    for s, e in spans:
+        if merged and s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+
+    covered = sum(e - s for s, e in merged)
+
+    gap = merged[0][0]                      # gap before the first clip
+    prev_end = merged[0][1]
+    for s, e in merged[1:]:
+        gap = max(gap, s - prev_end)
+        prev_end = e
+    gap = max(gap, duration - prev_end)     # tail gap after the last clip
+
+    return round(100 * covered / duration, 1), round(gap, 1)
 
 
 def _queue_auto_renders(ctx: TaskContext, db, moments: list[Moment]) -> list[Clip]:
@@ -316,22 +515,24 @@ def detect(ctx: TaskContext) -> None:
     boundaries = _sentence_boundaries(words)
     silences = features.get("silences", [])
 
-    prompt_inject = _build_annotated(segments=segments, features=features)
+    full_script = _build_annotated(segments=segments, features=features)
 
-    # The run row is committed here, before the Gemini call, so the task holds no
-    # transaction across it — Postgres reaps sessions idle inside a transaction after 5
-    # minutes, which is how this job died on 2026-07-18. run_id is what everything below
-    # uses: no ORM object outlives this block.
+    # The run row is committed here, before any Gemini call, so the task holds no
+    # transaction across the model work — Postgres reaps sessions idle inside a transaction
+    # after 5 minutes, which is how this job died on 2026-07-18. run_id is what everything
+    # below uses: no ORM object outlives this block.
     with ctx.tx() as db:
         run = RankingRun(
             video_id=ctx.video.id,
-            params={"max_moments": MAX_MOMENTS, "min_len": MIN_LEN, "max_len": MAX_LEN,
+            params={"max_per_section": MAX_MOMENTS_PER_SECTION, "max_sections": MAX_SECTIONS,
+                    "max_total_moments": MAX_TOTAL_MOMENTS, "overlap_ratio": OVERLAPPING_RATIO,
+                    "section_workers": SECTION_WORKERS, "min_len": MIN_LEN, "max_len": MAX_LEN,
                     "core_min": CORE_MIN, "core_max": CORE_MAX, "cushion": CUSHION,
                     "sent_gap": SENT_GAP, "loud_db_over_median": LOUD_DB_OVER_MEDIAN},
             prompt_version=PROMPT_VERSION,
             model=GEMINI_MODEL,
             status="running",
-            est_cost_usd=None,   # filled in after the Gemini call
+            est_cost_usd=None,   # filled in after the Gemini calls
         )
         db.add(run)
         db.flush()
@@ -339,30 +540,43 @@ def detect(ctx: TaskContext) -> None:
 
     ctx.progress(stage="detect", pct=30)
 
+
+
     try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=f"{SYSTEM_INSTRUCTIONS}\n\n---\n\n{prompt_inject}",
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=list[MomentOut],
-                temperature=0.4,
-                # optionally: system_instruction=SYSTEM_INSTRUCTIONS, and put only
-                # the annotated script in `contents`
-            ),
-        )
+        in_tok = out_tok = 0
 
-        if response.parsed is None:
-            raise RuntimeError(f"Gemini returned no parseable moments: {response.text!r}")
-        candidates: list[MomentOut] = response.parsed
-        logger.info("detect %s: gemini returned %d candidate moments", ctx.video.id, len(candidates))
+        def _tally(usage) -> None:
+            nonlocal in_tok, out_tok
+            if usage is not None:
+                in_tok += usage.prompt_token_count
+                out_tok += usage.candidates_token_count
 
+        # PASS 1 — segment the whole video into topical sections that tile the timeline,
+        # then split any section over MAX_SECTION_LEN so none outgrows its clip budget.
+        sections, seg_usage = _segment_transcript(full_script)
+        _tally(seg_usage)
+        sections = _cap_section_lengths(sections, MAX_SECTION_LEN)[:MAX_SECTIONS]
+        logger.info("detect %s: segmented into %d sections", ctx.video.id, len(sections))
 
-        usage = response.usage_metadata
-        in_tok = usage.prompt_token_count
-        out_tok = usage.candidates_token_count
+        # PASS 2 — mine each section on its own slice, concurrently so their latency
+        # overlaps. If segmentation gave us nothing, fall back to a single whole-video pass
+        # so a video never comes back empty.
+        candidates: list[MomentOut] = []
+        if sections:
+            with ThreadPoolExecutor(max_workers=SECTION_WORKERS) as pool:
+                results = list(pool.map(
+                    lambda s: _extract_section(s, segments, features), sections
+                ))
+            for section_moments, usage in results:
+                candidates.extend(section_moments)
+                _tally(usage)
+        else:
+            section_moments, usage = _extract(full_script)
+            candidates.extend(section_moments)
+            _tally(usage)
 
-        # Fill these from *current* Gemini 2.5 Flash pricing — verify, don't trust a constant blindly
+        logger.info("detect %s: gathered %d candidate moments", ctx.video.id, len(candidates))
+
         est_cost = round(in_tok / 1_000_000 * GEMINI_IN_PER_MTOK
                     + out_tok / 1_000_000 * GEMINI_OUT_PER_MTOK, 6)
 
@@ -377,10 +591,10 @@ def detect(ctx: TaskContext) -> None:
                 .values(status="done", est_cost_usd=est_cost)
             )
 
-            # Turn candidates into Moment rows. Timestamps come back as the h:mm:ss strings
-            # the model cited, so parse them back to seconds. Anything outside the duration
-            # window is dropped here — the returned/kept gap is a signal we record in metrics.
-            kept: list[Moment] = []
+            # Build Moment objects in memory first — filter by duration, snap, score — but
+            # do NOT add them yet. Dedup compares every candidate's final snapped span
+            # against the others, so all of them must exist before any is written.
+            in_bounds: list[Moment] = []
             for m in candidates:
                 raw_start, raw_end = _parse_ts(m.start), _parse_ts(m.end)
                 dur = raw_end - raw_start
@@ -390,7 +604,7 @@ def detect(ctx: TaskContext) -> None:
                     raw_start, raw_end, boundaries, silences, ctx.video.duration_sec
                 )
                 final = 0.4 * m.hook + 0.3 * m.shareability + 0.2 * m.completeness + 0.1 * m.visual
-                moment = Moment(
+                in_bounds.append(Moment(
                     video_id=ctx.video.id,
                     run_id=run_id,
                     start_sec=start_sec, end_sec=end_sec,
@@ -400,24 +614,34 @@ def detect(ctx: TaskContext) -> None:
                             "final": round(final, 3)},
                     type=m.type, title=m.title, reason=m.reason,
                     transcript_excerpt=m.transcript_excerpt,
-                )
+                ))
+
+            # Drop overlapping duplicates, then persist only the survivors.
+            kept, dropped = _dedup_overlap(in_bounds, OVERLAPPING_RATIO)
+            for moment in kept:
                 db.add(moment)
-                kept.append(moment)
 
             db.flush()   # mint the moment ids the clips point back to
             clips = _queue_auto_renders(ctx, db, kept)
+
+            coverage_pct, largest_gap = _coverage_metrics(kept, ctx.video.duration_sec)
 
         ctx.progress(pct=80)
 
         ctx.metrics.update({
             "model": GEMINI_MODEL,
             "prompt_version": PROMPT_VERSION,
+            "sections_count": len(sections),
             "moments_returned": len(candidates),
+            "moments_in_bounds": len(in_bounds),
+            "dropped_overlap": dropped,
             "moments_kept": len(kept),
             "clips_queued": len(clips),
             "input_tokens": in_tok,
             "output_tokens": out_tok,
             "est_cost_usd": est_cost,
+            "timeline_coverage_pct": coverage_pct,
+            "largest_gap_sec": largest_gap,
         })
 
     except Exception:
@@ -433,8 +657,10 @@ def detect(ctx: TaskContext) -> None:
     ctx.set_status(VideoStatus.ready)
     ctx.progress(stage="detect", pct=100)
     logger.info(
-        "detect %s: done, kept=%d clips_queued=%d",
-        ctx.video.id, ctx.metrics["moments_kept"], ctx.metrics["clips_queued"],
+        "detect %s: done, sections=%d kept=%d clips_queued=%d coverage=%.0f%% gap=%.0fs",
+        ctx.video.id, ctx.metrics["sections_count"], ctx.metrics["moments_kept"],
+        ctx.metrics["clips_queued"], ctx.metrics["timeline_coverage_pct"],
+        ctx.metrics["largest_gap_sec"],
     )
 
 
