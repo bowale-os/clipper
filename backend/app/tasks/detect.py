@@ -8,10 +8,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy import select, update
 from pydantic import BaseModel
-from google.genai import errors, types
+from groq import APIStatusError
 
 from app.db.models import Clip, RankingRun, Transcript, Moment, VideoStatus
-from app.services.gemini_client import client
+from app.services.groq_client import client
 from app.tasks.render import DEFAULT_FORMAT
 from app.workers.contract import TaskContext, job_contract
 from app.workers.queues import io_queue
@@ -19,15 +19,17 @@ from app.services.r2_client import download_bytes
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = "gemini-2.5-flash"
-# Per-million-token prices for GEMINI_MODEL. VERIFY against current Gemini pricing
-# before trusting est_cost_usd — these drift and feed billing rollups.
-GEMINI_IN_PER_MTOK = 0.30
-GEMINI_OUT_PER_MTOK = 2.50
-GEMINI_MAX_ATTEMPTS = 3
-# Codes worth a local retry: 429 (rate limit) and the transient 5xx family Gemini returns
-# under load. A 503 here is what sank a whole detect job on 2026-07-18.
-GEMINI_RETRY_CODES = {429, 500, 502, 503, 504}
+GROQ_MODEL = "openai/gpt-oss-120b"   # must support structured (json_schema) outputs on Groq;
+                                     # verify the model + its free-tier RPM/TPM before trusting
+                                     # the throttle below.
+# Per-million-token prices for GROQ_MODEL, for the est_cost_usd metrics row only (the free tier
+# bills nothing). VERIFY against current Groq pricing before trusting these — they drift.
+GROQ_IN_PER_MTOK = 0.15
+GROQ_OUT_PER_MTOK = 0.75
+GROQ_MAX_ATTEMPTS = 3
+# HTTP status codes worth a local retry: 429 (rate limit) and the transient 5xx family Groq
+# returns under load.
+GROQ_RETRY_CODES = {429, 500, 502, 503, 504}
 PROMPT_VERSION = "detect-v3"
 MAX_MOMENTS_PER_SECTION = 3
 MAX_SECTIONS = 40
@@ -52,30 +54,30 @@ OVERLAPPING_RATIO = 0.4
 SECTION_WORKERS = 4
 
 # ─── FREE-TIER THROTTLE ──────────────────────────────────────────────────────────────
-# WHY THIS EXISTS: Gemini's FREE tier caps gemini-2.5-flash at 5 requests/minute per model.
+# WHY THIS EXISTS: Groq's FREE tier rate-limits each model (per-minute request AND token caps).
 # detect fires 1 segment call + up to MAX_SECTIONS section calls across SECTION_WORKERS
-# threads, which blows past 5 RPM instantly and 429s the whole job (RESOURCE_EXHAUSTED).
-# This gate spaces every Gemini request GEMINI_MIN_INTERVAL_S apart, across ALL workers, so
-# we stay under the free-tier limit. It is a workaround for being on the free tier, nothing
-# more.
+# threads, which can burst past the free-tier RPM/TPM and 429 the whole job. This gate spaces
+# every Groq request GROQ_MIN_INTERVAL_S apart, across ALL workers, so we stay under the cap.
+# It is a workaround for being on the free tier, nothing more.
 #
-# TO REMOVE ONCE ON A PAID TIER: set GEMINI_MIN_INTERVAL_S = 0 (Tier 1 = ~1000 RPM, so
-# pacing only makes detect slower for no benefit). At interval 0 the gate is a no-op and you
-# can delete this whole block plus the _throttle() call in _gemini_with_retry if you want it
-# gone entirely. Search "FREE-TIER THROTTLE" to find every piece.
-GEMINI_MIN_INTERVAL_S = 13.0
+# TUNE THIS: Groq's free limits are far more generous than Gemini's old 5 RPM, so this starts
+# low. Check the model's actual free-tier RPM on console.groq.com and set the interval to
+# roughly 60 / RPM. On a paid tier set GROQ_MIN_INTERVAL_S = 0 to make the gate a no-op (and
+# you can delete this whole block plus the _throttle() call in _groq_with_retry). Search
+# "FREE-TIER THROTTLE" to find every piece.
+GROQ_MIN_INTERVAL_S = 2.0
 _throttle_lock = threading.Lock()
 _last_call_at = 0.0
 
 
 def _throttle() -> None:
-    """Block until at least GEMINI_MIN_INTERVAL_S has passed since the last Gemini request,
+    """Block until at least GROQ_MIN_INTERVAL_S has passed since the last Groq request,
     counting requests from every section worker. See the FREE-TIER THROTTLE note above."""
-    if GEMINI_MIN_INTERVAL_S <= 0:
+    if GROQ_MIN_INTERVAL_S <= 0:
         return
     global _last_call_at
     with _throttle_lock:
-        wait = _last_call_at + GEMINI_MIN_INTERVAL_S - time.monotonic()
+        wait = _last_call_at + GROQ_MIN_INTERVAL_S - time.monotonic()
         if wait > 0:
             time.sleep(wait)
         _last_call_at = time.monotonic()
@@ -142,6 +144,17 @@ class SectionOut(BaseModel):
     start: str
     end: str
     topic: str
+
+
+# Groq's structured-output mode returns a single JSON object, so the top-level list Gemini
+# accepted becomes a one-field wrapper. _segment_transcript/_extract unwrap these back to
+# plain lists so the rest of detect is unchanged.
+class SectionList(BaseModel):
+    sections: list[SectionOut]
+
+
+class MomentList(BaseModel):
+    moments: list[MomentOut]
 
 
 
@@ -235,45 +248,72 @@ def _loud_spikes(rms):
         if e - s >= LOUD_MIN_DUR
     ]
 
-def _gemini_with_retry(call):
-    """Run a Gemini call, retrying transient throttle/5xx locally before letting it abort
+def _strict_schema(model: type[BaseModel]) -> dict:
+    """Groq's json_schema mode enforces the schema strictly: every object must set
+    additionalProperties=false and list all of its properties as required. Pydantic's
+    generated schema does neither, so walk it (including $defs) and add both."""
+    schema = model.model_json_schema()
+
+    def _walk(node) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object" and node.get("properties"):
+                node["additionalProperties"] = False
+                node["required"] = list(node["properties"].keys())
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(schema)
+    return schema
+
+
+def _json_schema(model: type[BaseModel], name: str) -> dict:
+    """A response_format asking Groq to return exactly `model` as JSON."""
+    return {"type": "json_schema", "json_schema": {"name": name, "schema": _strict_schema(model)}}
+
+
+def _groq_with_retry(call):
+    """Run a Groq call, retrying transient throttle/5xx locally before letting it abort
     the job. `call` is a zero-arg callable so the request is re-issued fresh each attempt.
 
     detect fans out to one segment call plus up to MAX_SECTIONS section calls, so any single
-    503 would otherwise sink the whole job and force RQ to re-run all of them. Retrying just
+    5xx would otherwise sink the whole job and force RQ to re-run all of them. Retrying just
     the one throttled call keeps the other sections' work; only a call still failing after
-    GEMINI_MAX_ATTEMPTS falls through to the whole-job retry (a genuinely saturated provider).
+    GROQ_MAX_ATTEMPTS falls through to the whole-job retry (a genuinely saturated provider).
     """
-    for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
+    for attempt in range(1, GROQ_MAX_ATTEMPTS + 1):
         try:
-            _throttle()   # FREE-TIER THROTTLE: pace requests under the 5 RPM free-tier cap
+            _throttle()   # FREE-TIER THROTTLE: pace requests under the free-tier caps
             return call()
-        except errors.APIError as e:
-            if e.code not in GEMINI_RETRY_CODES or attempt == GEMINI_MAX_ATTEMPTS:
+        except APIStatusError as e:
+            if e.status_code not in GROQ_RETRY_CODES or attempt == GROQ_MAX_ATTEMPTS:
                 raise
             # Exponential base plus jitter, so the concurrent section calls do not all wake
             # and re-hit the provider in lockstep while it is still saturated.
             delay = 2 ** attempt + random.uniform(0, 1)
-            logger.warning("detect: gemini %s, retry %d/%d in %.1fs",
-                           e.code, attempt, GEMINI_MAX_ATTEMPTS, delay)
+            logger.warning("detect: groq %s, retry %d/%d in %.1fs",
+                           e.status_code, attempt, GROQ_MAX_ATTEMPTS, delay)
             time.sleep(delay)
 
 
 def _segment_transcript(full_script) -> tuple[list[SectionOut], object]:
     """Pass 1: split the whole annotated script into consecutive topical sections that tile
     the timeline. Cheap output (just boundaries), so this is one call over the full script."""
-    response = _gemini_with_retry(lambda: client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=f"{SECTION_SYSTEM_INSTRUCTIONS}\n\n---\n\n{full_script}",
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=list[SectionOut],
-            temperature=0.2,
-        ),
+    response = _groq_with_retry(lambda: client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": SECTION_SYSTEM_INSTRUCTIONS},
+            {"role": "user", "content": full_script},
+        ],
+        response_format=_json_schema(SectionList, "sections"),
+        temperature=0.2,
     ))
-    if response.parsed is None:
-        raise RuntimeError(f"Gemini returned no parseable sections: {response.text!r}")
-    return response.parsed, response.usage_metadata
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("Groq returned no content for section segmentation")
+    return SectionList.model_validate_json(content).sections, response.usage
 
 
 def _cap_section_lengths(sections, max_len):
@@ -344,18 +384,23 @@ def _extract(prompt_inject, topic=None) -> tuple[list[MomentOut], object | None]
         return [], None
 
     focus = f"\n\nThis section is about: {topic}." if topic else ""
-    response = _gemini_with_retry(lambda: client.models.generate_content(
-        model=GEMINI_MODEL,
-        contents=f"{SYSTEM_INSTRUCTIONS}{focus}\n\n---\n\n{prompt_inject}",
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=list[MomentOut],
-            temperature=0.4,
-        ),
+    response = _groq_with_retry(lambda: client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {"role": "system", "content": f"{SYSTEM_INSTRUCTIONS}{focus}"},
+            {"role": "user", "content": prompt_inject},
+        ],
+        response_format=_json_schema(MomentList, "moments"),
+        temperature=0.4,
     ))
-    if response.parsed is None:
-        return [], response.usage_metadata
-    return response.parsed, response.usage_metadata
+    content = response.choices[0].message.content
+    if not content:
+        return [], response.usage
+    try:
+        moments = MomentList.model_validate_json(content).moments
+    except ValueError:                       # pydantic ValidationError subclasses ValueError
+        return [], response.usage
+    return moments, response.usage
 
 
 def _extract_section(section, segments, features) -> tuple[list[MomentOut], object | None]:
@@ -561,7 +606,7 @@ def detect(ctx: TaskContext) -> None:
                     "core_min": CORE_MIN, "core_max": CORE_MAX, "cushion": CUSHION,
                     "sent_gap": SENT_GAP, "loud_db_over_median": LOUD_DB_OVER_MEDIAN},
             prompt_version=PROMPT_VERSION,
-            model=GEMINI_MODEL,
+            model=GROQ_MODEL,
             status="running",
             est_cost_usd=None,   # filled in after the Gemini calls
         )
@@ -579,8 +624,8 @@ def detect(ctx: TaskContext) -> None:
         def _tally(usage) -> None:
             nonlocal in_tok, out_tok
             if usage is not None:
-                in_tok += usage.prompt_token_count
-                out_tok += usage.candidates_token_count
+                in_tok += usage.prompt_tokens
+                out_tok += usage.completion_tokens
 
         # PASS 1 — segment the whole video into topical sections that tile the timeline,
         # then split any section over MAX_SECTION_LEN so none outgrows its clip budget.
@@ -608,8 +653,8 @@ def detect(ctx: TaskContext) -> None:
 
         logger.info("detect %s: gathered %d candidate moments", ctx.video.id, len(candidates))
 
-        est_cost = round(in_tok / 1_000_000 * GEMINI_IN_PER_MTOK
-                    + out_tok / 1_000_000 * GEMINI_OUT_PER_MTOK, 6)
+        est_cost = round(in_tok / 1_000_000 * GROQ_IN_PER_MTOK
+                    + out_tok / 1_000_000 * GROQ_OUT_PER_MTOK, 6)
 
         # One transaction for everything the run produces: marking the run done, the
         # Moment rows, and the Clip rows that point at them. All of it or none of it —
@@ -660,7 +705,7 @@ def detect(ctx: TaskContext) -> None:
         ctx.progress(pct=80)
 
         ctx.metrics.update({
-            "model": GEMINI_MODEL,
+            "model": GROQ_MODEL,
             "prompt_version": PROMPT_VERSION,
             "sections_count": len(sections),
             "moments_returned": len(candidates),
@@ -678,7 +723,7 @@ def detect(ctx: TaskContext) -> None:
     except Exception:
         # The run row is already committed, so this is a plain UPDATE by id rather than
         # the re-insert this used to need. Deliberately touches no ORM object: a lazy
-        # load here would raise and bury the real error (a Gemini 503, usually).
+        # load here would raise and bury the real error (a Groq 5xx, usually).
         with ctx.tx() as db:
             db.execute(
                 update(RankingRun).where(RankingRun.id == run_id).values(status="error")
