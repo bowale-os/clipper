@@ -12,5 +12,6 @@ psycopg2-binary
 redis[hiredis]
 rq
 groq
+openai
 google-genai
 pgvector

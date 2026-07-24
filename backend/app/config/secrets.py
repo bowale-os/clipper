@@ -29,5 +29,6 @@ class Settings(BaseSettings):
     REDIS_URL: str            # Railway Redis plugin connection string
     GROQ_API_KEY: str
     GEMINI_API_KEY: str
+    DEEPSEEK_API_KEY: str
 
 settings = Settings()
