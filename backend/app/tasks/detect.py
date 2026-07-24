@@ -3,15 +3,15 @@ import logging
 import math
 import random
 import statistics
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from sqlalchemy import select, update
 from pydantic import BaseModel
-from groq import APIStatusError
+from openai import APIStatusError
 
 from app.db.models import Clip, RankingRun, Transcript, Moment, VideoStatus
-from app.services.groq_client import client
+from app.services.deepseek_client import client
 from app.tasks.render import DEFAULT_FORMAT
 from app.workers.contract import TaskContext, job_contract
 from app.workers.queues import io_queue
@@ -19,22 +19,30 @@ from app.services.r2_client import download_bytes
 
 logger = logging.getLogger(__name__)
 
-GROQ_MODEL = "openai/gpt-oss-120b"   # must support structured (json_schema) outputs on Groq;
-                                     # verify the model + its free-tier RPM/TPM before trusting
-                                     # the throttle below.
-# Per-million-token prices for GROQ_MODEL, for the est_cost_usd metrics row only (the free tier
-# bills nothing). VERIFY against current Groq pricing before trusting these — they drift.
-GROQ_IN_PER_MTOK = 0.15
-GROQ_OUT_PER_MTOK = 0.75
-GROQ_MAX_ATTEMPTS = 3
-# HTTP status codes worth a local retry: 429 (rate limit) and the transient 5xx family Groq
-# returns under load.
-GROQ_RETRY_CODES = {429, 500, 502, 503, 504}
+DEEPSEEK_MODEL = "deepseek-v4-pro"   # OpenAI-compatible. DeepSeek's direct API supports only
+                                     # response_format={"type":"json_object"} (NOT json_schema),
+                                     # so each schema is described in the system prompt and
+                                     # enforced by the Pydantic model_validate_json below.
+# Per-million-token prices for DEEPSEEK_MODEL, for the est_cost_usd metrics row only. VERIFY
+# against current DeepSeek pricing before trusting these — they drift. (~$0.435/M in on a
+# cache-miss, $0.87/M out; cache-hits are near-free so real cost runs below this estimate.)
+DEEPSEEK_IN_PER_MTOK = 0.435
+DEEPSEEK_OUT_PER_MTOK = 0.87
+DEEPSEEK_MAX_ATTEMPTS = 3
+# HTTP status codes worth a local retry. DeepSeek is concurrency-limited (no TPM/RPM), so a 429
+# means the account's concurrent-request ceiling was hit; the 5xx family is transient load.
+DEEPSEEK_RETRY_CODES = {429, 500, 502, 503, 504}
 PROMPT_VERSION = "detect-v3"
 MAX_MOMENTS_PER_SECTION = 3
 MAX_SECTIONS = 40
 MAX_SECTION_LEN = 300.0     # a section covers at most 5 min, so no long stretch competes
                             # for one section's 3-clip budget; enforced by splitting after
+# Pass 1 splits the annotated script into consecutive windows of at most this many characters
+# and segments each on its own. DeepSeek's 1M-token context makes this optional now (the whole
+# script would fit in one request), but it stays as cheap insurance: it keeps each request
+# small and predictable, so no single window can blow a per-request ceiling. The windows are
+# contiguous in time, so their sections still tile the whole timeline when concatenated.
+SECTION_INPUT_CHAR_BUDGET = 20000
 MAX_TOTAL_MOMENTS = 60
 MIN_LEN=20
 MAX_LEN=120
@@ -53,34 +61,11 @@ LOUD_MIN_DUR = 1.0
 OVERLAPPING_RATIO = 0.4
 SECTION_WORKERS = 4
 
-# ─── FREE-TIER THROTTLE ──────────────────────────────────────────────────────────────
-# WHY THIS EXISTS: Groq's FREE tier rate-limits each model (per-minute request AND token caps).
-# detect fires 1 segment call + up to MAX_SECTIONS section calls across SECTION_WORKERS
-# threads, which can burst past the free-tier RPM/TPM and 429 the whole job. This gate spaces
-# every Groq request GROQ_MIN_INTERVAL_S apart, across ALL workers, so we stay under the cap.
-# It is a workaround for being on the free tier, nothing more.
-#
-# TUNE THIS: Groq's free limits are far more generous than Gemini's old 5 RPM, so this starts
-# low. Check the model's actual free-tier RPM on console.groq.com and set the interval to
-# roughly 60 / RPM. On a paid tier set GROQ_MIN_INTERVAL_S = 0 to make the gate a no-op (and
-# you can delete this whole block plus the _throttle() call in _groq_with_retry). Search
-# "FREE-TIER THROTTLE" to find every piece.
-GROQ_MIN_INTERVAL_S = 2.0
-_throttle_lock = threading.Lock()
-_last_call_at = 0.0
+# No request throttle: DeepSeek is concurrency-limited (500 concurrent in-flight per account),
+# not TPM/RPM-limited, so there is nothing to pace against — detect's fan-out (1 segment call +
+# up to MAX_SECTIONS section calls across SECTION_WORKERS threads) stays well under that ceiling.
+# Concurrency 429s under heavy load are still possible; _deepseek_with_retry handles those.
 
-
-def _throttle() -> None:
-    """Block until at least GROQ_MIN_INTERVAL_S has passed since the last Groq request,
-    counting requests from every section worker. See the FREE-TIER THROTTLE note above."""
-    if GROQ_MIN_INTERVAL_S <= 0:
-        return
-    global _last_call_at
-    with _throttle_lock:
-        wait = _last_call_at + GROQ_MIN_INTERVAL_S - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        _last_call_at = time.monotonic()
 # Every kept moment renders without the user asking. This used to be a top-3 slice because
 # each render pulled down the whole source, so fifteen clips meant fifteen full downloads.
 # render now reads its window straight out of R2 over HTTP, so the cost is roughly one
@@ -146,7 +131,7 @@ class SectionOut(BaseModel):
     topic: str
 
 
-# Groq's structured-output mode returns a single JSON object, so the top-level list Gemini
+# DeepSeek's json_object mode returns a single JSON object, so the top-level list Gemini
 # accepted becomes a one-field wrapper. _segment_transcript/_extract unwrap these back to
 # plain lists so the rest of detect is unchanged.
 class SectionList(BaseModel):
@@ -178,7 +163,7 @@ def _parse_ts(ts) -> float:
 def _detect_done(ctx):
     """Only a *completed* run counts as done.
 
-    The run row is committed as status="running" before the Gemini call (so the task
+    The run row is committed as status="running" before the model call (so the task
     holds no transaction across it), which means a failed attempt leaves a row behind.
     Checking for mere existence would make a retry skip detect and report success on a
     video that has no moments at all.
@@ -248,72 +233,114 @@ def _loud_spikes(rms):
         if e - s >= LOUD_MIN_DUR
     ]
 
-def _strict_schema(model: type[BaseModel]) -> dict:
-    """Groq's json_schema mode enforces the schema strictly: every object must set
-    additionalProperties=false and list all of its properties as required. Pydantic's
-    generated schema does neither, so walk it (including $defs) and add both."""
-    schema = model.model_json_schema()
+# DeepSeek's direct API supports only response_format={"type":"json_object"}: it requires the
+# literal word "json" somewhere in the prompt and does NOT enforce a schema, so we describe the
+# exact object shape in the system prompt and lean on Pydantic (model_validate_json) to enforce
+# it. One shape block per output model, appended to the matching system instructions.
+JSON_RESPONSE_FORMAT = {"type": "json_object"}
 
-    def _walk(node) -> None:
-        if isinstance(node, dict):
-            if node.get("type") == "object" and node.get("properties"):
-                node["additionalProperties"] = False
-                node["required"] = list(node["properties"].keys())
-            for value in node.values():
-                _walk(value)
-        elif isinstance(node, list):
-            for value in node:
-                _walk(value)
+SECTION_JSON_SHAPE = """
 
-    _walk(schema)
-    return schema
+Respond with a single JSON object of exactly this shape, and nothing else:
+{"sections": [{"start": "h:mm:ss", "end": "h:mm:ss", "topic": "short phrase"}]}
+Every field is required on every section. Return {"sections": []} if you cannot segment it."""
 
+MOMENT_JSON_SHAPE = """
 
-def _json_schema(model: type[BaseModel], name: str) -> dict:
-    """A response_format asking Groq to return exactly `model` as JSON."""
-    return {"type": "json_schema", "json_schema": {"name": name, "schema": _strict_schema(model)}}
+Respond with a single JSON object of exactly this shape, and nothing else:
+{"moments": [{"start": "h:mm:ss", "end": "h:mm:ss", "type": "string", "title": "string", \
+"reason": "string", "hook": 0.0, "completeness": 0.0, "shareability": 0.0, "visual": 0.0, \
+"transcript_excerpt": "string"}]}
+The four score fields are numbers between 0 and 1. Every field is required on every moment. \
+Return {"moments": []} if nothing qualifies."""
 
 
-def _groq_with_retry(call):
-    """Run a Groq call, retrying transient throttle/5xx locally before letting it abort
-    the job. `call` is a zero-arg callable so the request is re-issued fresh each attempt.
+def _deepseek_with_retry(call):
+    """Run a DeepSeek call, retrying transient concurrency/5xx errors locally before letting
+    it abort the job. `call` is a zero-arg callable so the request is re-issued fresh each
+    attempt.
 
     detect fans out to one segment call plus up to MAX_SECTIONS section calls, so any single
-    5xx would otherwise sink the whole job and force RQ to re-run all of them. Retrying just
-    the one throttled call keeps the other sections' work; only a call still failing after
-    GROQ_MAX_ATTEMPTS falls through to the whole-job retry (a genuinely saturated provider).
+    5xx or concurrency 429 would otherwise sink the whole job and force RQ to re-run all of
+    them. Retrying just the one failed call keeps the other sections' work; only a call still
+    failing after DEEPSEEK_MAX_ATTEMPTS falls through to the whole-job retry (a genuinely
+    saturated provider).
     """
-    for attempt in range(1, GROQ_MAX_ATTEMPTS + 1):
+    for attempt in range(1, DEEPSEEK_MAX_ATTEMPTS + 1):
         try:
-            _throttle()   # FREE-TIER THROTTLE: pace requests under the free-tier caps
             return call()
         except APIStatusError as e:
-            if e.status_code not in GROQ_RETRY_CODES or attempt == GROQ_MAX_ATTEMPTS:
+            if e.status_code not in DEEPSEEK_RETRY_CODES or attempt == DEEPSEEK_MAX_ATTEMPTS:
                 raise
             # Exponential base plus jitter, so the concurrent section calls do not all wake
             # and re-hit the provider in lockstep while it is still saturated.
             delay = 2 ** attempt + random.uniform(0, 1)
-            logger.warning("detect: groq %s, retry %d/%d in %.1fs",
-                           e.status_code, attempt, GROQ_MAX_ATTEMPTS, delay)
+            logger.warning("detect: deepseek %s, retry %d/%d in %.1fs",
+                           e.status_code, attempt, DEEPSEEK_MAX_ATTEMPTS, delay)
             time.sleep(delay)
+
+
+def _script_windows(full_script, char_budget) -> list[str]:
+    """Split a newline-joined annotated script into consecutive windows of at most
+    char_budget characters, never breaking a line. Windows are contiguous in time, so the
+    sections found in each still tile the whole timeline when concatenated. A single line
+    longer than the budget becomes its own window rather than being dropped."""
+    windows: list[str] = []
+    cur: list[str] = []
+    cur_len = 0
+    for line in full_script.split("\n"):
+        add = len(line) + 1                       # +1 for the newline that rejoins them
+        if cur and cur_len + add > char_budget:
+            windows.append("\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(line)
+        cur_len += add
+    if cur:
+        windows.append("\n".join(cur))
+    return windows
 
 
 def _segment_transcript(full_script) -> tuple[list[SectionOut], object]:
     """Pass 1: split the whole annotated script into consecutive topical sections that tile
-    the timeline. Cheap output (just boundaries), so this is one call over the full script."""
-    response = _groq_with_retry(lambda: client.chat.completions.create(
-        model=GROQ_MODEL,
-        messages=[
-            {"role": "system", "content": SECTION_SYSTEM_INSTRUCTIONS},
-            {"role": "user", "content": full_script},
-        ],
-        response_format=_json_schema(SectionList, "sections"),
-        temperature=0.2,
-    ))
-    content = response.choices[0].message.content
-    if not content:
-        raise RuntimeError("Groq returned no content for section segmentation")
-    return SectionList.model_validate_json(content).sections, response.usage
+    the timeline. Cheap output (just boundaries). The script goes out in one or more windows,
+    each under SECTION_INPUT_CHAR_BUDGET, so a long video never exceeds the model's
+    per-request token ceiling; each window is contiguous in time, so concatenating the
+    sections from every window still tiles the whole timeline."""
+    prompt_tok = completion_tok = 0
+    sections: list[SectionOut] = []
+
+    for window in _script_windows(full_script, SECTION_INPUT_CHAR_BUDGET):
+        if not window.strip():
+            continue
+        # Bind window as a default arg: _deepseek_with_retry may re-issue the call, so it must
+        # not close over the loop variable.
+        response = _deepseek_with_retry(lambda w=window: client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {"role": "system", "content": SECTION_SYSTEM_INSTRUCTIONS + SECTION_JSON_SHAPE},
+                {"role": "user", "content": w},
+            ],
+            response_format=JSON_RESPONSE_FORMAT,
+            temperature=0.2,
+        ))
+        if response.usage is not None:
+            prompt_tok += response.usage.prompt_tokens
+            completion_tok += response.usage.completion_tokens
+        # json_object is not schema-enforced, so a window may come back empty or malformed.
+        # Skip that one window rather than raising and killing the whole job — the other
+        # windows still tile most of the timeline, and pass 2 falls back to a whole-video
+        # pass if segmentation yields nothing at all.
+        content = response.choices[0].message.content
+        if not content:
+            logger.warning("detect: deepseek returned no content for a section window; skipping")
+            continue
+        try:
+            sections.extend(SectionList.model_validate_json(content).sections)
+        except ValueError:
+            logger.warning("detect: deepseek section JSON failed validation; skipping the window")
+
+    usage = SimpleNamespace(prompt_tokens=prompt_tok, completion_tokens=completion_tok)
+    return sections, usage
 
 
 def _cap_section_lengths(sections, max_len):
@@ -377,20 +404,20 @@ def _build_annotated(segments, features) -> str:
     return "\n".join(line for _, _, line in events)
 
 def _extract(prompt_inject, topic=None) -> tuple[list[MomentOut], object | None]:
-    """The clip-finding Gemini call over one annotated script. Returns (moments, usage);
+    """The clip-finding DeepSeek call over one annotated script. Returns (moments, usage);
     usage is None when there was nothing to send (an empty slice), so the caller skips it
     in the token tally without a wasted request."""
     if not prompt_inject.strip():
         return [], None
 
     focus = f"\n\nThis section is about: {topic}." if topic else ""
-    response = _groq_with_retry(lambda: client.chat.completions.create(
-        model=GROQ_MODEL,
+    response = _deepseek_with_retry(lambda: client.chat.completions.create(
+        model=DEEPSEEK_MODEL,
         messages=[
-            {"role": "system", "content": f"{SYSTEM_INSTRUCTIONS}{focus}"},
+            {"role": "system", "content": f"{SYSTEM_INSTRUCTIONS}{focus}{MOMENT_JSON_SHAPE}"},
             {"role": "user", "content": prompt_inject},
         ],
-        response_format=_json_schema(MomentList, "moments"),
+        response_format=JSON_RESPONSE_FORMAT,
         temperature=0.4,
     ))
     content = response.choices[0].message.content
@@ -593,7 +620,7 @@ def detect(ctx: TaskContext) -> None:
 
     full_script = _build_annotated(segments=segments, features=features)
 
-    # The run row is committed here, before any Gemini call, so the task holds no
+    # The run row is committed here, before any model call, so the task holds no
     # transaction across the model work — Postgres reaps sessions idle inside a transaction
     # after 5 minutes, which is how this job died on 2026-07-18. run_id is what everything
     # below uses: no ORM object outlives this block.
@@ -606,9 +633,9 @@ def detect(ctx: TaskContext) -> None:
                     "core_min": CORE_MIN, "core_max": CORE_MAX, "cushion": CUSHION,
                     "sent_gap": SENT_GAP, "loud_db_over_median": LOUD_DB_OVER_MEDIAN},
             prompt_version=PROMPT_VERSION,
-            model=GROQ_MODEL,
+            model=DEEPSEEK_MODEL,
             status="running",
-            est_cost_usd=None,   # filled in after the Gemini calls
+            est_cost_usd=None,   # filled in after the DeepSeek calls
         )
         db.add(run)
         db.flush()
@@ -653,8 +680,8 @@ def detect(ctx: TaskContext) -> None:
 
         logger.info("detect %s: gathered %d candidate moments", ctx.video.id, len(candidates))
 
-        est_cost = round(in_tok / 1_000_000 * GROQ_IN_PER_MTOK
-                    + out_tok / 1_000_000 * GROQ_OUT_PER_MTOK, 6)
+        est_cost = round(in_tok / 1_000_000 * DEEPSEEK_IN_PER_MTOK
+                    + out_tok / 1_000_000 * DEEPSEEK_OUT_PER_MTOK, 6)
 
         # One transaction for everything the run produces: marking the run done, the
         # Moment rows, and the Clip rows that point at them. All of it or none of it —
@@ -705,7 +732,7 @@ def detect(ctx: TaskContext) -> None:
         ctx.progress(pct=80)
 
         ctx.metrics.update({
-            "model": GROQ_MODEL,
+            "model": DEEPSEEK_MODEL,
             "prompt_version": PROMPT_VERSION,
             "sections_count": len(sections),
             "moments_returned": len(candidates),
@@ -723,7 +750,7 @@ def detect(ctx: TaskContext) -> None:
     except Exception:
         # The run row is already committed, so this is a plain UPDATE by id rather than
         # the re-insert this used to need. Deliberately touches no ORM object: a lazy
-        # load here would raise and bury the real error (a Groq 5xx, usually).
+        # load here would raise and bury the real error (a DeepSeek 5xx, usually).
         with ctx.tx() as db:
             db.execute(
                 update(RankingRun).where(RankingRun.id == run_id).values(status="error")
