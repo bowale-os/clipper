@@ -43,7 +43,7 @@ function Settings() {
           <div className="setting-row">
             <div>
               <b>Captions</b>
-              <span className="setting-hint">Burned into the picture</span>
+              <span className="setting-hint">If you want them added automatically</span>
             </div>
             <Toggle
               ariaLabel="Captions"

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -290,6 +291,40 @@ def _video_filter(fmt: str, crop: dict | None, srt_filename: str | None) -> str:
     return ",".join(stages)
 
 
+def _parse_ffmpeg_stats(stderr: str) -> dict:
+    """Pull timing out of ffmpeg's own output so a slow render can say *why* it was slow.
+
+    Two independent signals, which together separate "the CPU is starved" from "the read
+    is stalling":
+      * speed/fps come from the progress line ffmpeg already prints, and measure throughput
+        — speed=1.0x is real-time, below that is slower than real-time.
+      * -benchmark adds a 'bench: utime=.. stime=.. rtime=..' line: CPU time actually burnt
+        (utime+stime) versus wall time (rtime). cpu_fraction near 1 means the encode was
+        CPU-bound; well under 1 means most of the wall clock was spent waiting, i.e. on I/O.
+
+    Best-effort: any field ffmpeg did not emit is simply left out.
+    """
+    stats: dict = {}
+
+    speeds = re.findall(r"speed=\s*([\d.]+)x", stderr)
+    if speeds:
+        stats["encode_speed"] = float(speeds[-1])
+
+    fpses = re.findall(r"\bfps=\s*([\d.]+)", stderr)
+    if fpses:
+        stats["encode_fps"] = float(fpses[-1])
+
+    bench = re.search(r"utime=([\d.]+)s.*?stime=([\d.]+)s.*?rtime=([\d.]+)s", stderr)
+    if bench:
+        utime, stime, rtime = (float(g) for g in bench.groups())
+        stats["ffmpeg_cpu_s"] = round(utime + stime, 3)
+        stats["ffmpeg_wall_s"] = round(rtime, 3)
+        if rtime > 0:
+            stats["cpu_fraction"] = round((utime + stime) / rtime, 3)
+
+    return stats
+
+
 def _cut(
     workdir: str,
     src: str,
@@ -298,7 +333,7 @@ def _cut(
     duration: float,
     vf: str,
     input_opts: list[str] | None = None,
-) -> None:
+) -> dict:
     """Cut [start, start+duration] out of src and re-encode it to out_path.
 
     `src` is a local path or a URL; `input_opts` carries whatever that source needs (see
@@ -312,9 +347,12 @@ def _cut(
     ffmpeg runs with cwd=workdir so the subtitles filter can name the SRT by filename.
     The filter parses ':' as its own option separator, so an absolute path would need
     escaping — on Windows the drive letter alone ("C:\\...") breaks it.
+
+    Returns the timing ffmpeg reported for this run (see _parse_ffmpeg_stats).
     """
     cmd = [
         "ffmpeg", "-y",
+        "-benchmark",                 # appends CPU-vs-wall timing so we can tell why a cut was slow
         *(input_opts or []),
         "-ss", f"{start:.3f}",
         "-i", src,
@@ -331,6 +369,7 @@ def _cut(
         # Surface ffmpeg's own words — check=True would raise with them buried on .stderr,
         # and the contract only persists str(e) into job.error.
         raise RuntimeError(f"ffmpeg failed ({proc.returncode}): {proc.stderr[-2000:]}")
+    return _parse_ffmpeg_stats(proc.stderr)
 
 
 def _probe_duration(path: str) -> float | None:
@@ -352,7 +391,7 @@ def _probe_duration(path: str) -> float | None:
         return None
 
 
-def _cut_from_source(ctx: TaskContext, workdir, src_path, out_path, start, duration, vf) -> str:
+def _cut_from_source(ctx: TaskContext, workdir, src_path, out_path, start, duration, vf) -> tuple[str, dict]:
     """Cut the clip, reading the source over HTTP if it can and off disk if it must.
 
     Streaming is the fast path and the reason a video can auto-render every one of its
@@ -370,15 +409,17 @@ def _cut_from_source(ctx: TaskContext, workdir, src_path, out_path, start, durat
     connection as an error. It sees end of input, closes the file it has, and exits 0. That
     would upload a clip cut short in the middle and mark it ready, which is worse than any
     failure — nothing anywhere would say something went wrong.
+
+    Returns which path produced the file and the timing ffmpeg reported for it.
     """
     reason = None
     try:
         url = generate_download_url(ctx.video.r2_key, expires_in=SOURCE_URL_EXPIRES)
-        _cut(workdir, url, out_path, start, duration, vf, input_opts=STREAM_INPUT_OPTS)
+        stats = _cut(workdir, url, out_path, start, duration, vf, input_opts=STREAM_INPUT_OPTS)
 
         actual = _probe_duration(out_path)
         if actual is None or actual >= duration - STREAM_SHORTFALL_TOLERANCE:
-            return "stream"
+            return "stream", stats
 
         reason = f"streamed clip is {actual:.1f}s, expected {duration:.1f}s"
     except RuntimeError as e:
@@ -392,8 +433,8 @@ def _cut_from_source(ctx: TaskContext, workdir, src_path, out_path, start, durat
     )
 
     download_file(ctx.video.r2_key, src_path)
-    _cut(workdir, src_path, out_path, start, duration, vf)
-    return "download"
+    stats = _cut(workdir, src_path, out_path, start, duration, vf)
+    return "download", stats
 
 
 # render only reads the video (r2_key, words_key) and writes its own Clip row, so it
@@ -440,7 +481,7 @@ def render(ctx: TaskContext) -> None:
 
         vf = _video_filter(fmt, params.get("crop"), SRT_FILENAME if srt_path else None)
 
-        source = _cut_from_source(
+        source, cut_stats = _cut_from_source(
             ctx, workdir, src_path, out_path, start, duration, vf
         )
 
@@ -463,9 +504,13 @@ def render(ctx: TaskContext) -> None:
         "duration_sec": round(duration, 3),
         "output_bytes": out_bytes,
         "render_ms": int((time.monotonic() - started) * 1000),
+        # ffmpeg's own timing for this cut — see _parse_ffmpeg_stats. cpu_fraction near 1
+        # is a CPU-bound encode; well under 1 means the wall clock went on waiting (I/O).
+        **cut_stats,
     })
 
     logger.info(
-        "render %s: done in %dms, clip=%s source=%s",
+        "render %s: done in %dms, clip=%s source=%s speed=%sx cpu_fraction=%s",
         ctx.video.id, ctx.metrics["render_ms"], clip_id, source,
+        cut_stats.get("encode_speed", "?"), cut_stats.get("cpu_fraction", "?"),
     )
