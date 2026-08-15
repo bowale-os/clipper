@@ -89,6 +89,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
+  min-height: 34px;
   margin-bottom: var(--space-8);
 }
 
