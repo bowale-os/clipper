@@ -6,6 +6,7 @@
 
 html {
   background: var(--canvas);
+  scrollbar-gutter: stable;
 }
 
 body {
