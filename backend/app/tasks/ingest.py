@@ -25,6 +25,25 @@ def _ingest_done(ctx: TaskContext) -> bool:
     # duration_sec is set last, so it doubles as ingest's "all artifacts written" flag.
     return ctx.video.duration_sec is not None
 
+def _ffprobe_dimensions(path: str) -> tuple:
+    proc = subprocess.run(
+            [
+                "ffprobe", "-select_streams", "v:0", "-show_entries", 
+                "stream=width,height", 
+                "-of", "json", path,
+            ],
+            capture_output=True, text=True, check=True,
+        )
+
+    streams = json.loads(proc.stdout).get("streams", [])
+    if not streams:
+        raise ValueError(f"no video stream in {path}")
+    s = streams[0]
+    width, height = s["width"], s["height"] 
+    return width, height
+    
+    
+    
 
 def _ffprobe_duration(path: str) -> float:
     """Seconds of media at `path`, via ffprobe. Raises if ffprobe fails or has no duration."""
@@ -168,6 +187,7 @@ def ingest(ctx: TaskContext) -> None:
         download_file(video.r2_key, video_path)
         probed_size = os.path.getsize(video_path)
         duration = _ffprobe_duration(video_path)
+        width, height = _ffprobe_dimensions(video_path)
         ctx.progress(pct=20)
         logger.info("ingest %s: downloaded source (%d bytes, %.1fs)", video.id, probed_size, duration)
 
@@ -201,6 +221,8 @@ def ingest(ctx: TaskContext) -> None:
         features_key=features_key,
         keyframes_key=keyframes_key,
         thumbs_key=thumbs_key,
+        width=width,
+        height=height
     )
     # duration_sec is what _ingest_done checks, so it must land after the artifacts —
     # otherwise a crash in between would let a retry skip a video with no audio_key.

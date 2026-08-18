@@ -295,8 +295,6 @@ def _script_windows(full_script, char_budget) -> list[str]:
             cur, cur_len = [], 0
         cur.append(line)
         cur_len += add
-    if cur:
-        windows.append("\n".join(cur))
     return windows
 
 

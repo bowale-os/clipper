@@ -66,6 +66,11 @@ class SignPartsRequest(BaseModel):
 
 v_router = APIRouter()
 
+def _aspect_ratio(width, height) -> str | None:
+    if not width or not height:
+        return None
+    divisor = math.gcd(width, height)
+    return f"{width // divisor}:{height //divisor}"
 
 def _video_to_dict(video: Video, clip_count: int = 0) -> dict:
     # video.pipeline also carries upload state (upload_id, part offsets), which is
@@ -86,6 +91,9 @@ def _video_to_dict(video: Video, clip_count: int = 0) -> dict:
         # failure. The video has not failed; it just will not move for a few minutes.
         "retrying": bool(pipeline.get("retrying")),
         "clip_count": clip_count,
+        "width": video.artifacts.get("width"),
+        "height": video.artifacts.get("height"),
+        "aspect_ratio": _aspect_ratio(video.artifacts.get("width"), video.artifacts.get("height"))
     }
 
 
@@ -431,10 +439,15 @@ def get_video_metadata(
     db: Session = Depends(get_db),
 ):
     video = get_owned_video(db, video_id, user)
+    height = video.artifacts.get("height")
+    width = video.artifacts.get("width")
     # TODO(v2): the ingest worker fills duration_sec after upload; until then it may be null.
     return {
         "duration": float(video.duration_sec) if video.duration_sec is not None else None,
         "filename": video.filename,
+        "width": width,
+        "height": height,
+        "aspect_ratio": _aspect_ratio(width=width, height=height)
     }
 
 
