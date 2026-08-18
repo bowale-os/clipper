@@ -12,7 +12,7 @@ from app.dependencies.user import get_current_user_record
 from app.dependencies.rate_limit import rate_limit
 from app.api.common import get_owned_video
 from app.db.session import get_db
-from app.tasks.render import FORMATS, DEFAULT_FORMAT
+from app.tasks.render import DEFAULT_FORMAT, ALLOWED_FORMATS
 from app.workers.queues import JOB_RETRY, cpu_queue
 from app.services.r2_client import generate_download_url
 
@@ -53,7 +53,7 @@ def create_clip(
             detail="Video bounds are not appropriate"
         )
     
-    if request.format not in FORMATS: 
+    if request.format not in ALLOWED_FORMATS: 
         raise HTTPException(
             status_code=400,
             detail="invalid video format received from request"

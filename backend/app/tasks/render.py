@@ -23,12 +23,14 @@ from app.services.r2_client import (
 logger = logging.getLogger(__name__)
 
 # Output presets: aspect ratio -> exact (width, height). 9:16 is the short-form default.
+ORIGINAL_FORMAT = "original"
 FORMATS = {
     "9:16": (1080, 1920),
     "1:1": (1080, 1080),
     "16:9": (1920, 1080),
 }
-DEFAULT_FORMAT = "9:16"
+ALLOWED_FORMATS = {*FORMATS, ORIGINAL_FORMAT}
+DEFAULT_FORMAT = ORIGINAL_FORMAT
 X264_CRF = "20"           # quality; lower = better + bigger. 20 is a good social default.
 X264_PRESET = "veryfast"  # encode speed vs filesize. Workers are CPU-bound, so favour speed.
 
@@ -260,23 +262,22 @@ def _build_srt(ctx: TaskContext, workdir: str, start: float, end: float) -> str 
     return path
 
 
-def _video_filter(fmt: str, crop: dict | None, srt_filename: str | None) -> str:
+def _video_filter(crop: dict | None, srt_filename: str | None, fmt = ORIGINAL_FORMAT) -> str:
     """Build the -vf chain: crop to aspect, scale to the preset, optionally burn captions.
 
     The crop expressions pick the largest rect of the target aspect that still fits inside
     the source (crop centres it by default), so a 16:9 podcast becomes 9:16 by taking the
     middle column rather than letterboxing. An explicit `crop` from the editor wins.
     """
-    if fmt not in FORMATS:
-        raise RuntimeError(f"Unsupported format {fmt!r}; expected one of {sorted(FORMATS)}")
-    width, height = FORMATS[fmt]
+    if fmt not in ALLOWED_FORMATS:
+        raise RuntimeError(f"Unsupported format {fmt}; expected one of {sorted(ALLOWED_FORMATS)}")
 
-    if crop:
-        crop_stage = f"crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']}"
+    if fmt == ORIGINAL_FORMAT:
+        stages = ["scale=trunc(iw/2)*2:trunc(ih/2)*2"]
     else:
+        width, height = FORMATS[fmt]
         crop_stage = f"crop='min(iw,ih*{width}/{height})':'min(ih,iw*{height}/{width})'"
-
-    stages = [crop_stage, f"scale={width}:{height}"]
+        stages = [crop_stage, f"scale={width}:{height}"]
 
     if srt_filename:
         # Captions are burnt in after the scale so the font size means the same thing
@@ -479,7 +480,7 @@ def render(ctx: TaskContext) -> None:
                 # _video_filter for why that path cannot be absolute.
                 shutil.copyfile(FONT_SOURCE, os.path.join(workdir, FONT_FILENAME))
 
-        vf = _video_filter(fmt, params.get("crop"), SRT_FILENAME if srt_path else None)
+        vf = _video_filter(params.get("crop"), SRT_FILENAME if srt_path else None, fmt)
 
         source, cut_stats = _cut_from_source(
             ctx, workdir, src_path, out_path, start, duration, vf
