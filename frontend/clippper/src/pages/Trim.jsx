@@ -163,6 +163,7 @@ function Trim() {
               {metadata?.duration != null ? (
                 <span className="mono">{formatClock(metadata.duration, { includeHours: true })} long</span>
               ) : null}
+              {metadata?.aspect_ratio ? <span className="mono">{metadata.aspect_ratio}</span> : null}
             </div>
 
             <div className="trim-fields">
