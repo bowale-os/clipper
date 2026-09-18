@@ -1,4 +1,4 @@
-gtclippper.fyi - brand assets
+clippper.fyi - brand assets
 
 colours
   cream    #ffedd2

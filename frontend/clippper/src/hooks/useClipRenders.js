@@ -33,8 +33,15 @@ function toFilename(moment) {
 
 /**
  * Renders are queued on a worker, so creating one only hands back an id. This
- * owns every in-flight render for the screen and polls them together, so a
- * dozen clips can be rendering at once without each tile running its own timer.
+ * owns every in-flight render for the screen and polls the ones it started
+ * itself together, so a dozen clips can be rendering at once without each
+ * tile running its own timer.
+ *
+ * Seeded entries (status came from the server's own clip list, via seed())
+ * are deliberately left out of this poll: useVideoClips is already re-fetching
+ * that same list on its own timer, and seed() re-runs on every one of those
+ * fetches, so polling them here too would just be a second, uncoordinated
+ * GET per clip for data that's already on its way.
  */
 export function useClipRenders() {
   const { runWithToken } = useAuthedApi()
@@ -177,7 +184,7 @@ export function useClipRenders() {
 
     async function poll() {
       const entries = Object.entries(rendersRef.current).filter(
-        ([, render]) => render.clipId && PENDING.includes(render.status),
+        ([, render]) => render.clipId && render.local && PENDING.includes(render.status),
       )
 
       await Promise.all(

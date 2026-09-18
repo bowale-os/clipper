@@ -32,14 +32,18 @@ function greeting(date = new Date()) {
 
 function readyLine(video) {
   const count = Number(video?.clip_count) || 0
-  const clips = count ? `${count} clip${count === 1 ? '' : 's'} ready` : 'Processed'
-  const seconds = Number(video?.duration_sec)
+  const parts = [count ? `${count} clip${count === 1 ? '' : 's'} ready` : 'Processed']
 
+  const seconds = Number(video?.duration_sec)
   if (Number.isFinite(seconds) && seconds > 0) {
-    return `${clips} · ${Math.max(1, Math.round(seconds / 60))} min`
+    parts.push(`${Math.max(1, Math.round(seconds / 60))} min`)
   }
 
-  return clips
+  if (video?.aspect_ratio) {
+    parts.push(video.aspect_ratio)
+  }
+
+  return parts.join(' · ')
 }
 
 /**
