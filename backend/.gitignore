@@ -1,7 +1,6 @@
 __pycache__
 .env
 .venv
-alembic
 .pytest_cache
 .coverage
 brand-materials/

@@ -1,5 +1,7 @@
 # Clipper
 
+[![CI](https://github.com/bowale-os/clipper/actions/workflows/ci.yml/badge.svg)](https://github.com/bowale-os/clipper/actions/workflows/ci.yml)
+
 Turn a long video into ready-to-post short clips, automatically.
 
 Upload a stream VOD, podcast, lecture or match recording. Clipper transcribes it, finds the moments most worth sharing, snaps each one to clean start and end points, and renders captioned clips in the format you pick (vertical, square, landscape, or the original). Live at [clippper.fyi](https://clippper.fyi).
@@ -161,7 +163,7 @@ docs/               design and architecture notes
 - Node.js 20 or newer
 - FFmpeg and ffprobe on your `PATH`
 - A Redis instance (for example `docker run -p 6379:6379 redis`)
-- Accounts and keys for [Clerk](https://clerk.com), [Neon](https://neon.tech) (enable the `vector` extension), [Cloudflare R2](https://developers.cloudflare.com/r2/), [Groq](https://groq.com), [DeepSeek](https://platform.deepseek.com), and [Google AI Studio](https://aistudio.google.com) (Gemini)
+- Accounts and keys for [Clerk](https://clerk.com), [Neon](https://neon.tech) (run `CREATE EXTENSION IF NOT EXISTS vector;` once), [Cloudflare R2](https://developers.cloudflare.com/r2/), [Groq](https://groq.com), [DeepSeek](https://platform.deepseek.com), and [Google AI Studio](https://aistudio.google.com) (Gemini)
 
 ### 1. Backend
 
@@ -192,7 +194,7 @@ GEMINI_API_KEY=
 DEEPSEEK_API_KEY=
 ```
 
-The R2 bucket also needs a CORS rule allowing `PUT` and `GET` from `http://localhost:5173`, since the browser uploads to it directly.
+The R2 bucket also needs a CORS rule allowing `PUT` and `GET` from `http://localhost:5173` and exposing the `ETag` header (`ExposeHeaders`), since the browser uploads to it directly and large uploads need each part's `ETag`.
 
 Apply the database migrations and start the API:
 
@@ -232,9 +234,94 @@ Open http://localhost:5173, sign in, and upload a video.
 ### 3. Tests
 
 ```bash
-cd backend
-pytest
+./scripts/check.sh        # macOS / Linux
+.\scripts\check.ps1       # Windows PowerShell
 ```
+
+That runs everything. The full guide is in [Testing](#testing) below.
+
+## Testing
+
+Clipper has two automated test suites plus a live end-to-end check. None of the automated tests need API keys, a real database, Redis or internet access.
+
+| Suite | Where | Tests | Command |
+|---|---|---|---|
+| Backend | [backend/tests/](backend/tests/) | 518 | `cd backend && pytest --cov=app` |
+| Frontend | `*.test.js` beside the code in [frontend/clippper/src/](frontend/clippper/src/) | 110 | `cd frontend/clippper && npm test` |
+| End to end | [scripts/smoke_test.py](scripts/smoke_test.py) | run by hand | see below |
+
+**Run everything:** `./scripts/check.sh` (or `.\scripts\check.ps1` on Windows) runs the backend tests with a coverage gate, frontend lint, frontend tests and a production build, and stops at the first failure. Pass `backend` or `frontend` to run half. The same checks run on every push and pull request in [GitHub Actions](.github/workflows/ci.yml).
+
+**Install the test tools:** `pip install -r requirements.txt -r requirements-dev.txt` in `backend/`, and `npm install` in `frontend/clippper/`. For the full backend suite you also need FFmpeg on your `PATH`. Without it, the tests that cut real video are skipped, and the rest still run.
+
+### What the backend tests cover
+
+Backend coverage is about 98%, and the build fails if it drops below 95%.
+
+| Area | What is checked |
+|---|---|
+| Video routes | single and multipart uploads, resuming, expired uploads, completing and aborting, listing, search, moments, deleting, rate limits, and that no route ever reveals another user's video |
+| Clip routes | valid and invalid times, every output format, moment ownership, listing, download links |
+| Auth | real RS256 tokens: expired, wrong key, wrong origin, missing claims, `alg: none`; Clerk webhook signatures, replays and tampering; every protected route refuses requests without a token |
+| Job contract | success, retries, final failure, cancellation when a video is deleted, idempotent skips, and that follow-on jobs only start after the previous stage has saved its work |
+| Pipeline stages | ingest and render run the real FFmpeg on a generated video and check the output files; transcribe checks chunk merging with no duplicate or missing words; detect runs the whole two-pass flow against a scripted model, including provider failures and retries |
+| Storage and infrastructure | every R2 call is checked against the S3 API model, plus database sessions, queue and worker setup, and CORS |
+
+The tests also found two real bugs, now fixed: transcript chunking dropped the final chunk of long videos, and a validly signed token with no `sub` claim crashed with a server error instead of a 401.
+
+### What the frontend tests cover
+
+Formatters and timecode parsing, moment sorting, error messages, the API client (headers, errors, retry-after, every endpoint), and the resumable chunked uploader (parallelism, retries with backoff, expired links, resuming, cancelling).
+
+### End-to-end smoke test
+
+The automated tests mock the outside world, so this is how you check the real thing: a running API, real storage, real AI providers.
+
+```bash
+python scripts/smoke_test.py --api http://localhost:8000 --video path/to/talk.mp4 --token <token> --cleanup
+```
+
+It uploads the video, waits for the moments, renders the best one with captions, downloads it, checks it is a valid MP4, and prints `SMOKE TEST PASSED`. Use a video with clear speech.
+
+Getting a token: sign in to the app, open the browser console and run `await window.Clerk.session.getToken()`. These tokens last about a minute, so for long videos use `--clerk-user-id user_xxx` with `CLERK_SECRET_KEY` set, which fetches a fresh token whenever one is needed. The upload and polling flow is tested against a fake server in [backend/tests/test_smoke_script.py](backend/tests/test_smoke_script.py); the Clerk token minting has not been exercised.
+
+### Not covered
+
+- **Semantic search.** It uses pgvector, which SQLite lacks, so the tests cover the fallback to filename matching but not the vector query itself.
+- **The React pages and components.** The logic they depend on is tested; the screens themselves are not.
+- **Real AI output.** The tests use scripted model replies, so they check that Clipper handles responses correctly, not whether DeepSeek picks good moments. The smoke test is the way to judge that.
+
+## Try it
+
+**Fastest way:** open [clippper.fyi](https://clippper.fyi), sign in, and drop in a video of 10 to 30 minutes with clear speech (a podcast episode or a talk works well). Processing runs in the background. When it finishes, the video page lists the detected moments, each with a title, a reason it was picked, and its start and end times. Choose a few, pick a format, and export.
+
+**What a result looks like:** `GET /videos/{id}/moments` returns the detected moments in this shape:
+
+```json
+{
+  "status": "ready",
+  "filename": "episode-42.mp4",
+  "duration": 2711.4,
+  "moments": [
+    {
+      "id": "...",
+      "start_sec": 812.4,
+      "end_sec": 861.9,
+      "type": "...",
+      "title": "...",
+      "reason": "...",
+      "scores": {},
+      "status": "..."
+    }
+  ]
+}
+```
+
+<!-- TODO: add a screenshot or short demo GIF here, e.g. docs/demo.gif -->
+
+## Contributing
+
+Issues and pull requests are welcome. Good places to start: more output formats, better caption styling, and a faster path from upload to first result. Run `pytest` in `backend/` and `npm run lint` in `frontend/clippper/` before opening a pull request. If Clipper is useful to you, a star on the repo helps others find it.
 
 ## Deployment
 

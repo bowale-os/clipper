@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, status
 from svix.webhooks import Webhook, WebhookVerificationError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+import json
 import logging
 
 from app.config.secrets import settings
@@ -22,7 +23,10 @@ async def clerk_auth(request: Request):
     wh = Webhook(CLERK_WEBHOOK_SECRET)
 
     try:
-        message = wh.verify(payload, headers)
+        # svix 1.x returned the parsed message from verify(); 2.x returns None, so the
+        # body is parsed here once the signature has checked out. Works on both.
+        wh.verify(payload, headers)
+        message = json.loads(payload)
     except WebhookVerificationError as e:
         logger.warning("Webhook verification failed: %s", e)
         raise HTTPException(

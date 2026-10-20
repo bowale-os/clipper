@@ -110,7 +110,13 @@ async def get_current_user(request: Request) -> str:
                 detail="Invalid token"
             )
 
-        return payload["sub"]
+        subject = payload.get("sub")
+        if not subject:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        return subject
 
     except jwt.ExpiredSignatureError:
         raise HTTPException(
