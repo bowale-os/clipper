@@ -1,5 +1,7 @@
 # Clipper — System Architecture
 
+> **Note (2026-10):** this is the original v1 design. The build has since moved from Supabase to **Neon** Postgres, and moment detection now uses **DeepSeek** instead of Gemini (Gemini is used for embeddings only). For the current stack see the root [README](../README.md).
+>
 > **Status:** approved design, v1 (2026-07). Companion doc: [BUILD_PLAN.md](BUILD_PLAN.md).
 > **Product:** upload a long-form video (stream VOD, podcast, match footage) → AI finds, ranks, and cuts the best short clips → user reviews, refines, and exports.
 
